@@ -154,6 +154,15 @@ def _pop_par_weights(parameter, values, active=True):
     return value, pd[0], pd[1]
 
 
+#: Transform used to turn I(q) into the SESANS polarisation P(xi).
+#:
+#: Set this to :class:`.sesans.DHTSesansTransform` to use a digital filter
+#: instead of the dense log-spaced grid of :class:`.sesans.SesansTransform`.
+#: Anything with the same constructor signature and the same *q*, *q_calc*
+#: and *apply* will do; see :mod:`.sesans` for what the two differ in.
+SESANS_TRANSFORM = sesans.SesansTransform
+
+
 def _make_sesans_transform(data):
     # Pre-compute the Hankel matrix (H)
     SElength, SEunits = data.x, data._xunit
@@ -171,7 +180,7 @@ def _make_sesans_transform(data):
 
     Rmax = 10000000
     zaccept = 2 * np.pi / np.max(wavelength) * np.sin(theta_max)
-    hankel = sesans.SesansTransform(data.x, SElength, wavelength, zaccept, Rmax)
+    hankel = SESANS_TRANSFORM(data.x, SElength, wavelength, zaccept, Rmax)
     return hankel
 
 

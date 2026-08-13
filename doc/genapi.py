@@ -90,6 +90,7 @@ modules = [
     ('rst2html', 'Convert doc strings the web pages'),
     ('sasview_model', 'Sasview interface'),
     ('sesans', 'SESANS calculation routines'),
+    ('sesans_filter', 'SESANS digital filter coefficients'),
     ('special', 'Special functions library'),
     # Deprecate use of Fibonacci integration
     #('special.fibonacci', 'Fibonacci spiral spherical integration'),
