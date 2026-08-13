@@ -213,6 +213,85 @@ wins on that file overall, because it loses less to the peak than the dense
 grid loses to truncation — but a sharper feature would eventually cross over,
 and the filter has no refinement knob to answer with.
 
+## How sharp a feature does it take?
+
+The cleanest way to answer that is to sharpen the one feature we already have.
+`core_shell.ses` keeps its spin-echo lengths, wavelength and acceptance; the
+model stays `core_shell_sphere@hardsphere`; only `volfraction` moves, which
+narrows the structure factor peak and changes nothing else:
+
+```python
+from sasmodels import sesans
+from sasmodels.test_sesans import (
+    MEASUREMENTS, Measurement, evaluate, reference_polarisation,
+    relative_error)
+
+base = [m for m in MEASUREMENTS if m.filename == "core_shell.ses"][0]
+for vf in (0.45, 0.50, 0.55, 0.60, 0.65, 0.70):
+    m = Measurement(base.filename, base.model_name,
+                    dict(base.pars, volfraction=vf))
+    reference = reference_polarisation(m, n_linear=400001)
+    for transform in (sesans.SesansTransform, sesans.DHTSesansTransform):
+        P, _ = evaluate(m, transform)
+        print(vf, transform.__name__, relative_error(P, reference))
+```
+
+The reference was re-checked at each `volfraction` — doubling its resolution
+moves it by ~1e-10 — so it still referees at these sharpnesses.
+
+| `volfraction` | peak FWHM | filter points across | err dense | err filter | closer |
+| --- | --- | --- | --- | --- | --- |
+| 0.45 | 0.099 dec | 1.9 | 5.3e-2 | **4.2e-3** | filter, 12.5× |
+| 0.50 | — | — | 6.2e-2 | **1.4e-2** | filter, 4.5× |
+| 0.55 | 0.049 dec | 0.9 | 7.5e-2 | **2.5e-2** | filter, 3.1× |
+| 0.60 | 0.032 dec | 0.6 | 9.3e-2 | **7.4e-2** | filter, 1.3× |
+| 0.65 | — | — | 1.21e-1 | **1.15e-1** | filter, 1.05× |
+| 0.70 | — | — | **1.61e-1** | 1.89e-1 | dense, 1.2× |
+
+(FWHM measured above the minimum of `S(q)`, which is a narrower baseline than
+the one the test uses — the "third of a decade" quoted in the previous section
+is the same peak measured above the `q -> 0` floor.)
+
+So the crossover exists and lands at `volfraction ≈ 0.68`. Across this range
+the filter degrades by 45× and the dense grid by 3×: the filter has a fixed
+~19 abscissae per decade and nothing to spend when the integrand needs more,
+which is the cost of having no tuning parameters.
+
+The more informative number is underneath, splitting the error in two again:
+
+| `volfraction` | dense G(ξ) | filter G(ξ) | dense G(0) | filter G(0) |
+| --- | --- | --- | --- | --- |
+| 0.45 | 8.5e-3 | **4.2e-3** | 4.4e-2 | 2.0e-6 |
+| 0.50 | **1.0e-2** | 1.4e-2 | — | — |
+| 0.55 | **1.2e-2** | 2.5e-2 | 6.2e-2 | 2.4e-5 |
+| 0.60 | **1.6e-2** | 7.4e-2 | 7.8e-2 | 2.9e-5 |
+| 0.65 | **2.0e-2** | 1.15e-1 | — | — |
+| 0.70 | **2.7e-2** | 1.9e-1 | — | — |
+
+**On `G(ξ)` alone — the oscillatory integral the filter exists to do — the
+dense grid overtakes it at `volfraction ≈ 0.48`, and is 7× better by 0.70.**
+That is far earlier than the total-error crossover at 0.68, and `volfraction`
+0.5 is an ordinary concentrated suspension.
+
+The filter goes on winning overall up to 0.68 only because the dense grid's
+`G(0)` error is large enough to mask its better `G(ξ)`. Two errors of
+different origin, and the larger one belongs to the other method.
+
+Two caveats on how far to push this. `volfraction` above ~0.5 is past where
+Percus-Yevick is quantitatively reliable, so the *total*-error crossover at
+0.68 is arguably not reachable with a physical sample of this model — but the
+`G(ξ)` crossover at 0.48 is squarely inside the usable range. And this is one
+model on one file: it says a sharp enough feature flips the ranking, and
+roughly how sharp, not that hardsphere is the worst case.
+
+What it changes about the argument: the filter's advantage on the six measured
+files may be mostly a `G(0)` advantage rather than a better Hankel transform.
+The check that would settle it is `dense G(ξ)` against `filter G(ξ)` on the
+five *smooth* files, with `G(0)` set aside. If the filter wins those,
+replacing the transform is the right move; if it only ties, the smaller and
+better-targeted fix is to repair `G(0)` in the existing method, which would
+also keep the dense grid's advantage on sharp features. That has not been run.
+
 ## Accuracy on a closed form
 
 As a sanity check rather than a verdict, on a Gaussian scatterer
@@ -279,9 +358,15 @@ in the filter's favour:
 
 What is still open:
 
-- **The structure factor case.** `core_shell.ses` costs the filter a factor of
-  sixteen, and the filter has no way to refine. One file is not enough to know
-  how sharp a feature has to be before it loses outright.
+- **Whether `G(ξ)` alone favours the filter.** Sharpening the hardsphere peak
+  showed the dense grid overtaking it on `G(ξ)` at `volfraction ≈ 0.48`, well
+  inside the physical range, with the filter's overall lead carried by `G(0)`.
+  The same split has not been run on the five smooth files, and it decides
+  whether the answer is "replace the transform" or "fix `G(0)`".
+- **The structure factor case, beyond hardsphere.** The crossover is now
+  located for one model on one file — total error at `volfraction ≈ 0.68` — but
+  hardsphere need not be the worst case, and the filter still has no way to
+  refine.
 - **Cost at many spin-echo lengths.** The filter is 201 points per spin-echo
   length; above roughly 200 points the dense grid is cheaper. The largest file
   here is 120. This is a real crossover, just not one these datasets reach.
