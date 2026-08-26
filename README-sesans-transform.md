@@ -223,7 +223,7 @@ narrows the structure factor peak and changes nothing else:
 ```python
 from sasmodels import sesans
 from sasmodels.test_sesans import (
-    MEASUREMENTS, Measurement, evaluate, reference_polarisation,
+    MEASUREMENTS, Measurement, make_calculator, reference_polarisation,
     relative_error)
 
 base = [m for m in MEASUREMENTS if m.filename == "core_shell.ses"][0]
@@ -232,7 +232,7 @@ for vf in (0.45, 0.50, 0.55, 0.60, 0.65, 0.70):
                     dict(base.pars, volfraction=vf))
     reference = reference_polarisation(m, n_linear=400001)
     for transform in (sesans.SesansTransform, sesans.DHTSesansTransform):
-        P, _ = evaluate(m, transform)
+        P = make_calculator(m, transform)(**m.pars)
         print(vf, transform.__name__, relative_error(P, reference))
 ```
 
@@ -248,9 +248,9 @@ moves it by ~1e-10 — so it still referees at these sharpnesses.
 | 0.65 | — | — | 1.21e-1 | **1.15e-1** | filter, 1.05× |
 | 0.70 | — | — | **1.61e-1** | 1.89e-1 | dense, 1.2× |
 
-(FWHM measured above the minimum of `S(q)`, which is a narrower baseline than
-the one the test uses — the "third of a decade" quoted in the previous section
-is the same peak measured above the `q -> 0` floor.)
+(FWHM measured above the minimum of `S(q)`. The "third of a decade" quoted in
+the previous section is the same peak measured above the `q -> 0` floor, a
+wider baseline and so a wider peak.)
 
 So the crossover exists and lands at `volfraction ≈ 0.68`. Across this range
 the filter degrades by 45× and the dense grid by 3×: the filter has a fixed

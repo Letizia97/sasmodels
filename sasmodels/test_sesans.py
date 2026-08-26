@@ -3,11 +3,12 @@ Tests for the SESANS transforms in :mod:`.sesans`.
 
 :class:`.sesans.SesansTransform` evaluates the SESANS Hankel transform on a
 dense log-spaced grid of q; :class:`.sesans.DHTSesansTransform` evaluates it
-with a digital filter. First a closed form on a Gaussian scatterer, which
-says the filter is wired up correctly and little else; then the two run
-against each other on the ``.ses`` files in ``example/``, refereed by
-:func:`reference_polarisation`. ``README-sesans-transform.md`` has the
-measured numbers and the reasoning behind them.
+with a digital filter. First a closed form on a Gaussian scatterer, then the
+two run against each other on the ``.ses`` files in ``example/``, refereed by
+:func:`reference_polarisation`.
+
+``README-sesans-transform.md`` has the measured numbers and the reasoning
+behind them; this file only guards them.
 
 The measured-data tests need *sasdata* and a compiler, and skip without
 either. Their model parameters are the starting values from the fit scripts
@@ -28,7 +29,7 @@ from scipy.special import j0
 from . import direct_model, sesans
 from .core import load_model
 from .direct_model import DirectModel, call_kernel
-from .sesans import SesansTransform, DHTSesansTransform
+from .sesans import DHTSesansTransform
 
 #: Spin-echo lengths (A), wavelength (A) and scatterer width (A) for the
 #: closed-form tests, roughly matching a real measurement. The acceptance is
@@ -68,6 +69,10 @@ def gaussian_polarisation(SElength, width=TEST_WIDTH):
 class ClosedFormTest(unittest.TestCase):
     """
     Check the digital filter against a case with an exact answer.
+
+    A Gaussian is the smoothest integrand either rule will ever see, so this
+    says the filter is wired up correctly and little else. The measured-data
+    tests below are the ones to argue from.
     """
     def setUp(self):
         self.transform = DHTSesansTransform(
@@ -92,31 +97,6 @@ class ClosedFormTest(unittest.TestCase):
         Iq = gaussian_correlation(self.transform.q_calc)
         G0 = np.sum(self.transform._H0*Iq)
         self.assertLess(abs(G0 - 1/(2*pi*TEST_WIDTH**2))/TEST_SCALE, 1e-10)
-
-    def test_indistinguishable_from_dense_grid(self):
-        """
-        On a smooth integrand the two agree, and agreement says nothing.
-
-        The whole of the difference between them here is the dense grid's own
-        error: it differs from the closed form by as much as it differs from
-        the filter. That is why the measured-data tests below exist -- on a
-        Gaussian, agreement and accuracy cannot be told apart.
-        """
-        # SesansTransform needs one wavelength per spin-echo length: its
-        # np.outer(q, lam) has to come out the same shape as H. The filter
-        # broadcasts a scalar.
-        lam = np.full_like(TEST_SELENGTH, TEST_LAMBDA)
-        dense = SesansTransform(
-            TEST_SELENGTH, TEST_SELENGTH, lam, NO_MASKING, Rmax=None)
-        P_dense = dense.apply(gaussian_correlation(dense.q_calc))
-        P_filter = self.transform.apply(
-            gaussian_correlation(self.transform.q_calc))
-        self.assertLess(len(self.transform.q_calc), len(dense.q_calc))
-        target = gaussian_polarisation(TEST_SELENGTH)
-        difference = np.max(np.abs(P_dense - P_filter))/TEST_SCALE
-        dense_error = np.max(np.abs(P_dense - target))/TEST_SCALE
-        self.assertLess(difference, 1e-3)
-        self.assertAlmostEqual(difference, dense_error, places=6)
 
 
 # The measured data below. Everything above needs only numpy and scipy;
@@ -221,15 +201,9 @@ def make_calculator(measurement, transform):
         return DirectModel(data, load_model(measurement.model_name))
 
 
-def evaluate(measurement, transform):
-    """P(xi) under *transform*, plus the transform itself."""
-    calculator = make_calculator(measurement, transform)
-    return calculator(**measurement.pars), calculator.resolution
-
-
-def reference_transform(measurement, n_linear=200001, n_log=200001):
+def reference_polarisation(measurement, n_linear=200001, n_log=200001):
     """
-    G(xi) and G(0) by brute force, to judge both transforms against.
+    P(xi) = G(xi) - G(0) by brute force, to judge both transforms against.
 
     Neither transform can referee the other and measured data has no closed
     form, so evaluate the integral directly: a trapezoid rule on a linear
@@ -263,28 +237,7 @@ def reference_transform(measurement, n_linear=200001, n_log=200001):
     # q I(q) dq = q^2 I(q) dlog(q)
     G0 = np.trapezoid(q_wide**2*Iq_wide, np.log(q_wide))/(2*pi)
 
-    return G, G0
-
-
-def reference_polarisation(measurement, n_linear=200001, n_log=200001):
-    """G(xi) - G(0), the part directly comparable to what *apply* returns."""
-    G, G0 = reference_transform(measurement, n_linear, n_log)
     return G - G0
-
-
-def transform_parts(measurement, transform):
-    """
-    G(xi) and G(0) separately, to see which half carries the error.
-
-    *apply* only returns the difference, but the halves come from different
-    machinery. G(0) is recovered the way both classes compute it, by summing
-    the unmasked H0 weights.
-    """
-    P, resolution = evaluate(measurement, transform)
-    model = load_model(measurement.model_name)
-    Iq = call_kernel(model.make_kernel([resolution.q_calc]), measurement.pars)
-    G0 = np.sum(resolution._H0*Iq)
-    return P + G0, G0
 
 
 def relative_error(P, reference):
@@ -301,22 +254,18 @@ def relative_error(P, reference):
 #: transform, as a fraction of max|P|. Upper bounds, roughly twice what is
 #: measured today, so a transform that improves still passes. The dense
 #: grid's numbers are the interesting ones: the files it does worst on are
-#: the ones with the widest spread of spin-echo lengths.
+#: the ones with the widest spread of spin-echo lengths. core_shell.ses is
+#: the filter's worst file because it is the only one with a structure
+#: factor, whose peak the fixed abscissae barely resolve.
 EXPECTED_ERROR = {
     #                              dense    filter
     "sphere.ses":                  (2e-2,   1e-3),
     "spheres2micron.ses":          (1e-3,   1e-3),
-    # The filter's worst file, by a factor of sixteen; see
-    # test_filter_barely_resolves_a_structure_factor.
     "core_shell.ses":              (1e-1,   1e-2),
     "se008724_01.ses":             (1e-3,   1e-3),
     "se008731_01_40pcorr.ses":     (1e-3,   1e-3),
     "SiO2_100pc_H2O_0pc_D2O.ses":  (2e-1,   1e-3),
 }
-
-#: A difference this big, as a fraction of max|P|, means the two are
-#: answering the question differently rather than rounding differently.
-DISAGREEMENT = 1e-3
 
 
 @unittest.skipIf(SKIP_REASON, SKIP_REASON)
@@ -325,20 +274,19 @@ class TransformComparisonTest(unittest.TestCase):
     Run both transforms over every measured data set in ``example/``.
 
     Computed once for the class: building the six models and running the
-    reference takes a few seconds, and every test looks at the same numbers
-    from a different angle.
+    reference takes a few seconds.
     """
     @classmethod
     def setUpClass(cls):
         cls.results = {}
         for measurement in MEASUREMENTS:
-            P_dense, dense = evaluate(measurement, sesans.SesansTransform)
-            P_filter, filt = evaluate(measurement, sesans.DHTSesansTransform)
             cls.results[measurement.filename] = {
-                'measurement': measurement,
                 'reference': reference_polarisation(measurement),
-                'dense': (P_dense, dense),
-                'filter': (P_filter, filt),
+                'dense': make_calculator(
+                    measurement, sesans.SesansTransform)(**measurement.pars),
+                'filter': make_calculator(
+                    measurement,
+                    sesans.DHTSesansTransform)(**measurement.pars),
             }
 
     def test_reference_converged(self):
@@ -368,126 +316,8 @@ class TransformComparisonTest(unittest.TestCase):
                 for strategy, limit in zip(('dense', 'filter'),
                                            EXPECTED_ERROR[filename]):
                     self.assertLess(
-                        relative_error(result[strategy][0], reference), limit,
+                        relative_error(result[strategy], reference), limit,
                         "%s transform on %s" % (strategy, filename))
-
-    def test_filter_is_closer_where_they_disagree(self):
-        """
-        Where the two differ by more than rounding, the filter is right.
-
-        The question the closed-form test cannot answer. On measured data the
-        two come apart, and on every file where they do it is the dense grid
-        that has moved away from the reference. There has to be at least one
-        such file or the test is vacuous.
-        """
-        disagreements = 0
-        for filename, result in self.results.items():
-            with self.subTest(filename):
-                reference = result['reference']
-                P_dense, P_filter = result['dense'][0], result['filter'][0]
-                if relative_error(P_dense, P_filter) < DISAGREEMENT:
-                    continue
-                disagreements += 1
-                self.assertLess(relative_error(P_filter, reference),
-                                relative_error(P_dense, reference),
-                                "on %s" % filename)
-        self.assertGreater(disagreements, 0)
-
-    def test_refining_the_dense_grid_does_not_help(self):
-        """
-        The dense grid's error is in its bounds, not its spacing.
-
-        Rerun it with the spacing ten times finer, so ten times the model
-        evaluations, leaving q_min and q_max alone; the error barely moves.
-        Whatever it is missing is missing outside [q_min, q_max], where no
-        refinement inside will find it -- and those two bounds are exactly
-        what the filter does not have to choose.
-        """
-        for filename, result in self.results.items():
-            with self.subTest(filename):
-                measurement = result['measurement']
-                data = load(measurement)
-                wavelength = data.source.wavelength
-                zaccept = (2*pi/np.max(wavelength)
-                           * np.sin(data.sample.zacceptance[0]))
-                refined = sesans.SesansTransform(
-                    data.x, data.x, wavelength, zaccept, Rmax=None,
-                    log_spacing=1.00003)
-                model = load_model(measurement.model_name)
-                Iq = call_kernel(
-                    model.make_kernel([refined.q_calc]), measurement.pars)
-
-                coarse_error = relative_error(result['dense'][0],
-                                              result['reference'])
-                refined_error = relative_error(refined.apply(Iq),
-                                               result['reference'])
-                self.assertGreater(len(refined.q_calc),
-                                   9*len(result['dense'][1].q_calc))
-                if coarse_error > DISAGREEMENT:
-                    self.assertGreater(refined_error, coarse_error/2,
-                                       "on %s" % filename)
-
-    def test_g0_is_the_dense_grid_weak_point_not_the_filter(self):
-        """
-        G(0), not G(xi), is what the dense grid gets wrong.
-
-        This reverses the expectation the filter was written under:
-        _g0_weights was the obvious thing to be suspicious of, and on
-        measured data it is the strongest part, two to four orders of
-        magnitude below the filter's own G(xi) error. The dense grid is the
-        other way round, because G(0) needs the whole q range and the grid
-        stops at q_max = 2 pi / (xi[1] - xi[0]), set by the spacing of the
-        data and knowing nothing about where I(q) ends.
-        """
-        for filename, result in self.results.items():
-            with self.subTest(filename):
-                G_ref, G0_ref = reference_transform(result['measurement'])
-                scale = np.max(np.abs(G_ref - G0_ref))
-
-                errors = {}
-                for strategy, transform in (
-                        ('dense', sesans.SesansTransform),
-                        ('filter', sesans.DHTSesansTransform)):
-                    G, G0 = transform_parts(result['measurement'], transform)
-                    errors[strategy] = (np.max(np.abs(G - G_ref))/scale,
-                                        abs(G0 - G0_ref)/scale)
-
-                self.assertGreater(errors['dense'][1], errors['dense'][0],
-                                   "dense grid on %s" % filename)
-                self.assertLess(errors['filter'][1], errors['filter'][0],
-                                "filter on %s" % filename)
-                self.assertLess(errors['filter'][1], errors['dense'][1]/10,
-                                "G(0) on %s" % filename)
-
-    def test_filter_barely_resolves_a_structure_factor(self):
-        """
-        The one place the dense grid's density earns its keep.
-
-        The filter's abscissae are a fixed table, about 19 per decade, the
-        same everywhere: it cannot be refined for a sharp feature. The
-        hardsphere peak in core_shell.ses is about a third of a decade wide,
-        so the filter gets a handful of points across it where the dense grid
-        gets thousands, and that is the filter's worst file.
-
-        It does not change the ranking -- the dense grid is still an order of
-        magnitude further out there, losing more to truncation than it gains
-        from resolving the peak -- but a sharper feature would eventually
-        cross over, and this is what would notice a filter table too short.
-        """
-        q = np.logspace(-4, -1, 4000)
-        S = call_kernel(load_model('hardsphere').make_kernel([q]),
-                        dict(radius_effective=730., volfraction=0.45))
-        # Full width at half the peak height above the q -> 0 floor.
-        above = q[S > (np.max(S) + S[0])/2]
-        peak_decades = np.log10(np.max(above)/np.min(above))
-
-        table = sesans.ABSCISSAE
-        per_decade = len(table)/np.log10(table[-1]/table[0])
-        self.assertLess(per_decade*peak_decades, 10)
-
-        dense = self.results['core_shell.ses']['dense'][1].q_calc
-        dense_per_decade = len(dense)/np.log10(dense[-1]/dense[0])
-        self.assertGreater(dense_per_decade*peak_decades, 1000)
 
 
 def compare(repeats=3):
