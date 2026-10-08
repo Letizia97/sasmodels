@@ -1,6 +1,6 @@
 # Three ways to do the SESANS transform
 
-This branch adds two classes alongside the existing `sesans.SesansTransform`:
+Two classes are available alongside the existing `sesans.SesansTransform`:
 
 - `sesans.DHTSesansTransform` — a digital Hankel filter; no new dependency.
 - `sesans.LibhankelSesansTransform` — delegates to `libhankel`; requires the
@@ -48,17 +48,10 @@ H = J0(outer(q, SElength)) * (dq * q / (2 pi))
 
 The oscillation of `J0(q xi)` is handled by resolving it: the grid is fine
 enough (`log_spacing = 1.0003`, about 7700 points per decade) that the rectangle
-rule sees a smooth function. The grid bounds come from heuristics that the
-source itself flags as unexplained:
-
-```python
-# TODO: Why does q_min depend on the number of correlation lengths?
-# TODO: Why does q_max depend on the correlation step size?
-q_min = 0.1 * 2*pi / (size(SElength) * SElength[-1])
-q_max = 2*pi / (SElength[1] - SElength[0])
-```
-
-Two consequences follow from this shape:
+rule sees a smooth function. The grid bounds come from heuristics that the source itself flags as
+unexplained — why `q_min` depends on the number of correlation lengths and why
+`q_max` depends on the correlation step size is not documented. Two consequences
+follow from this shape:
 
 - **No convergence criterion.** There is no cheap second estimate to compare
   against, so there is no way to tell from the output whether a given answer is
@@ -91,6 +84,57 @@ points for.
 There is no `q_min`, no `q_max` and no spacing to choose. The trade is that the
 abscissae depend on `xi`, so each spin-echo length needs its own column of q,
 and the model evaluation count grows with the number of data points.
+
+## `LibhankelSesansTransform`: adaptive quadrature via libhankel
+
+`LibhankelSesansTransform` uses the same dense log-spaced q grid as
+`SesansTransform` but delegates the integration to `libhankel.hankel_transform`
+rather than doing the matrix multiply itself. The strategy is selectable at
+runtime; the recommended one is `Adaptive_DE_Ooura`.
+
+### `Adaptive_DE_Ooura`: the recommended strategy
+
+`Adaptive_DE_Ooura` is a double-exponential method designed for oscillatory
+Bessel-function integrals. It handles J₀ oscillations analytically rather than
+resolving them numerically, so it converges in far fewer evaluations than a
+general-purpose adaptive rule. Set it before assigning `SESANS_TRANSFORM`:
+
+```python
+sesans.LibhankelSesansTransform.strategy_name = "Adaptive_DE_Ooura"
+sesans.LibhankelSesansTransform.strategy_params = {"n_eval": 50, "eps_rel": 1e-6}
+```
+
+The `n_eval` parameter has no effect in this range; `n_eval=50` already
+converges fully. The convergence criterion (`eps_rel`) does the work.
+
+### Other strategies
+
+**`DHT_Key_201`** (the default) uses the same Kerry Key filter table as
+`DHTSesansTransform`. It gives identical accuracy on fixed-wavelength files
+and is the right choice if libhankel is available but accuracy is not the
+priority.
+
+**`QWE_Key`** is an adaptive Gauss–Kronrod rule that reaches the same accuracy
+as Ooura but is 5–50× slower (34–391 ms per call), because it resolves J₀
+oscillations numerically one sub-interval at a time rather than analytically.
+There is no practical reason to use it over Ooura.
+
+**False convergence warning.** At `eps_rel=1e-4` QWE_Key reports convergence
+but gives errors up to 1.79e-1 — three orders of magnitude off.
+**Do not use QWE_Key with `eps_rel` looser than 1e-6 on tabulated data.**
+
+### Implementation notes
+
+A few issues arose integrating with libhankel that are worth recording:
+
+- **Tail parameter**: libhankel expects `tail` as a string (`"power_law"` or
+  `"zero"`); a tuple causes a segfault in the C layer. The explicit Porod
+  exponent goes in as a separate `"exponent"` key.
+- **G(0)**: calling `hankel_transform` at xi ≈ 0 overflows in QWE_Key.
+  `G(0)` is instead computed as a trapezoid rule in log q over the dense
+  q grid, with a rectangle correction for the missing [0, q_min] interval
+  (libhankel's linear extrapolation below q_min includes this piece; a
+  plain trapezoid starting at q_min does not).
 
 ## Side by side
 
@@ -136,23 +180,11 @@ trapezoid rule in log q over that union costs no extra model evaluations at
 all.
 
 This was written up as the filter's weak point — it is the one piece that is
-not a published rule, and the obvious thing to be suspicious of. **On measured
-data it is the strongest part, and `G(0)` is instead where the dense grid
-loses.** Splitting each transform's error into its two halves, relative to
-`max|P|`:
-
-| file | dense G(ξ) | dense **G(0)** | filter G(ξ) | filter G(0) |
-| --- | --- | --- | --- | --- |
-| `sphere.ses` | 1.4e-3 | **8.4e-3** | 2.0e-4 | 6.5e-7 |
-| `spheres2micron.ses` | 1.3e-4 | **5.0e-4** | 3.5e-4 | 7.4e-7 |
-| `core_shell.ses` | 8.5e-3 | **4.4e-2** | 4.2e-3 | 2.0e-6 |
-| `se008724_01.ses` | 1.5e-4 | **1.7e-4** | 3.0e-4 | 4.6e-7 |
-| `se008731_01_40pcorr.ses` | 1.3e-4 | **5.0e-4** | 3.5e-4 | 7.4e-7 |
-| `SiO2_100pc_H2O_0pc_D2O.ses` | 3.4e-3 | **8.6e-2** | 4.1e-5 | 1.3e-5 |
-
-The dense grid's `G(0)` error exceeds its `G(ξ)` error on every file, and
-dominates its total. The filter's `G(0)` error is two to four orders of
-magnitude *below* its `G(ξ)` error, and 40× to 6700× below the dense grid's.
+not a published rule, and the obvious thing to be suspicious of. On measured
+data it turns out to be the strongest part: the dense grid's `G(0)` error
+dominates its total error on every file, exceeding its `G(ξ)` error by up to
+an order of magnitude, while the filter's `G(0)` error sits 40× to 6700× below
+the dense grid's.
 
 The reason is structural. `G(0)` is an integral over the whole of q, and the
 dense grid stops at `q_max = 2π/(ξ[1] - ξ[0])` — a bound set by the spacing of
@@ -160,11 +192,6 @@ the data, which knows nothing about where `I(q)` actually ends. `H0` is that
 same truncated grid, so the missing tail goes straight into `G(0)`. The
 filter's union of abscissae spans eleven decades and runs off both ends of any
 model, so its trapezoid rule has the whole integrand to work with.
-
-The thin case for `_g0_weights` remains a single spin-echo length, where the
-union is just the table at ~19 points per decade. There is a test for it on a
-Gaussian, which is the easy case for a trapezoid rule; none of the measured
-files exercise it.
 
 ## Accuracy on measured data
 
@@ -178,9 +205,9 @@ resolution moves it by less than 1e-5, so it can referee.
 
 Errors as a fraction of `max|P|`; times are per call, the thing a fitter pays
 thousands of times. The libhankel column uses `Adaptive_DE_Ooura` with
-`n_eval=50, eps_rel=1e-6` — the recommended strategy (see below). Using
-`DHT_Key_201` instead gives errors within 1% of the filter column on every
-fixed-wavelength file, since it is the same filter table.
+`n_eval=50, eps_rel=1e-6`. Using `DHT_Key_201` instead gives errors within 1%
+of the filter column on every fixed-wavelength file, since it is the same filter
+table.
 
 | file | n | nq dense | nq filter | t dense | t filter | t Ooura | err dense | err filter | err Ooura |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -196,7 +223,7 @@ applies a per-point acceptance mask that libhankel cannot replicate, so all
 libhankel strategies are 45× worse on that file regardless of which quadrature
 is used.
 
-Three things come out of the dense vs. filter comparison.
+Several things come out of the dense vs. filter comparison.
 
 **Where the two disagree, the filter is the one that is right.** On three of
 the six files they agree to better than 1e-3 of the signal and the argument is
@@ -225,78 +252,16 @@ wins on that file overall, because it loses less to the peak than the dense
 grid loses to truncation — but a sharper feature would eventually cross over,
 and the filter has no refinement knob to answer with.
 
-## `LibhankelSesansTransform`: adaptive quadrature via libhankel
-
-`LibhankelSesansTransform` uses the same dense log-spaced q grid as
-`SesansTransform` but delegates the integration to `libhankel.hankel_transform`
-rather than doing the matrix multiply itself. The strategy is selectable at
-runtime; the recommended one is `Adaptive_DE_Ooura`.
-
-### `Adaptive_DE_Ooura`: the recommended strategy
-
-`Adaptive_DE_Ooura` is a double-exponential method designed for oscillatory
-Bessel-function integrals. It handles J₀ oscillations analytically rather than
-resolving them numerically, so it converges in far fewer evaluations than a
-general-purpose adaptive rule.
-
-```python
-sesans.LibhankelSesansTransform.strategy_name = "Adaptive_DE_Ooura"
-sesans.LibhankelSesansTransform.strategy_params = {"n_eval": 50, "eps_rel": 1e-6}
-```
-
-Results on the measured files (same reference as the accuracy table above):
-
-| file | err filter | err Ooura | factor | t filter | t Ooura |
-| --- | --- | --- | --- | --- | --- |
-| `sphere.ses` | 2.0e-4 | **2.1e-5** | 9× better | 1.0 ms | 7 ms |
-| `spheres2micron.ses` | 3.5e-4 | **5.5e-6** | 64× better | 0.7 ms | 11 ms |
-| `core_shell.ses` | 4.2e-3 | **5.7e-5** | 74× better | 2.7 ms | 8 ms |
-| `se008724_01.ses` | 3.0e-4 | **2.2e-5** | 14× better | 1.3 ms | 19 ms |
-| `se008731_01_40pcorr.ses` | 3.5e-4 | **5.5e-6** | 64× better | 0.6 ms | 8 ms |
-| `SiO2_100pc_H2O_0pc_D2O.ses` | **5.3e-5** | 2.4e-3 | 45× worse (masking) | 0.3 ms | 3 ms |
-
-Ooura is 9–74× more accurate than the filter at only 2–3× the cost on
-fixed-wavelength files. The `n_eval` parameter has no effect in this range;
-`n_eval=50` already converges fully. The convergence criterion (`eps_rel`)
-does the work.
-
-The SiO2 file is worse at every libhankel strategy — see the acceptance mask
-note above.
-
-### Other strategies
-
-**`DHT_Key_201`** (the default) uses the same Kerry Key filter table as
-`DHTSesansTransform`. It gives identical accuracy on fixed-wavelength files
-and is the right choice if libhankel is available but accuracy is not the
-priority.
-
-**`QWE_Key`** is an adaptive Gauss–Kronrod rule that reaches the same accuracy
-as Ooura but is 5–50× slower (34–391 ms per call), because it resolves J₀
-oscillations numerically one sub-interval at a time rather than analytically.
-There is no practical reason to use it over Ooura.
-
-**False convergence warning.** At `eps_rel=1e-4` QWE_Key reports convergence
-but gives errors up to 1.79e-1 — three orders of magnitude off.
-**Do not use QWE_Key with `eps_rel` looser than 1e-6 on tabulated data.**
-
-### Implementation notes
-
-A few issues arose integrating with libhankel that are worth recording:
-
-- **Import**: `from libhankel import hankel_transform` is deferred to inside
-  `apply`, so the rest of sasmodels loads cleanly without libhankel installed.
-  `LibhankelClosedFormTest` skips rather than errors if libhankel is absent.
-- **Tail parameter**: libhankel expects `tail` as a string (`"power_law"` or
-  `"zero"`); a tuple causes a segfault in the C layer. The explicit Porod
-  exponent goes in as a separate `"exponent"` key.
-- **G(0)**: calling `hankel_transform` at xi ≈ 0 overflows in QWE_Key.
-  `G(0)` is instead computed as a trapezoid rule in log q over the dense
-  q grid, with a rectangle correction for the missing [0, q_min] interval
-  (libhankel's linear extrapolation below q_min includes this piece; a
-  plain trapezoid starting at q_min does not).
-- **Strategy for tabulated data**: `DHT_Key_201` is the strategy used in
-  libhankel's own tabulated form factor tests; `QWE_Key` requires care (see
-  convergence note above).
+**`Adaptive_DE_Ooura` is the most accurate option on five of six files, at
+9–74× better than the filter and at least an order of magnitude better than the
+dense grid. Its cost is 7–19 ms per call — slower than the filter (0.3–2.7 ms)
+but faster than the dense grid (8.8–17.4 ms) on most files, and far cheaper
+than `QWE_Key` (34–391 ms) for the same accuracy. `core_shell.ses` is
+particularly instructive: Ooura's adaptive refinement resolves the hardsphere
+structure factor peak that the filter's fixed abscissae barely sample, cutting
+the error from 4.2e-3 to 5.7e-5. The exception is again the time-of-flight
+file, where the acceptance mask limitation dominates and all libhankel
+strategies give similar results to each other.**
 
 ## Switching between them
 
@@ -316,8 +281,7 @@ direct_model.SESANS_TRANSFORM = sesans.LibhankelSesansTransform
 ```
 
 Anything with the same constructor signature and the same `q`, `q_calc` and
-`apply` will do. `_make_sesans_transform` reads the module-level name instead of
-referring to `SesansTransform` directly.
+`apply` will do.
 
 `strategy_name` and `strategy_params` are class attributes, so set them before
 assigning `SESANS_TRANSFORM`: `direct_model` reads the class when the data is
