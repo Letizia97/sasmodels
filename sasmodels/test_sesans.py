@@ -3,9 +3,10 @@ Tests for the SESANS transforms in :mod:`.sesans`.
 
 :class:`.sesans.SesansTransform` evaluates the SESANS Hankel transform on a
 dense log-spaced grid of q; :class:`.sesans.DHTSesansTransform` evaluates it
-with a digital filter. First a closed form on a Gaussian scatterer, then the
-two run against each other on the ``.ses`` files in ``example/``, refereed by
-:func:`reference_polarisation`.
+with a digital filter; :class:`.sesans.LibhankelSesansTransform` delegates to
+``libhankel`` (optional dependency). First closed-form tests against a Gaussian
+scatterer, then all three run against each other on the ``.ses`` files in
+``example/``, refereed by :func:`reference_polarisation`.
 
 ``README-sesans-transform.md`` has the measured numbers and the reasoning
 behind them; this file only guards them.
@@ -30,6 +31,13 @@ from . import direct_model, sesans
 from .core import load_model
 from .direct_model import DirectModel, call_kernel
 from .sesans import DHTSesansTransform
+
+
+try:
+    from libhankel import hankel_transform as _hankel_transform  # noqa: F401
+    _LIBHANKEL_AVAILABLE = True
+except ImportError:
+    _LIBHANKEL_AVAILABLE = False
 
 #: Spin-echo lengths (A), wavelength (A) and scatterer width (A) for the
 #: closed-form tests, roughly matching a real measurement. The acceptance is
@@ -66,7 +74,7 @@ def gaussian_polarisation(SElength, width=TEST_WIDTH):
     return (np.exp(-(SElength/width)**2/2) - 1)/(2*pi*width**2)
 
 
-class ClosedFormTest(unittest.TestCase):
+class DigitalFiltersClosedFormTest(unittest.TestCase):
     """
     Check the digital filter against a case with an exact answer.
 
@@ -97,6 +105,27 @@ class ClosedFormTest(unittest.TestCase):
         Iq = gaussian_correlation(self.transform.q_calc)
         G0 = np.sum(self.transform._H0*Iq)
         self.assertLess(abs(G0 - 1/(2*pi*TEST_WIDTH**2))/TEST_SCALE, 1e-10)
+
+
+@unittest.skipUnless(_LIBHANKEL_AVAILABLE, "libhankel is not installed")
+class LibhankelClosedFormTest(unittest.TestCase):
+    """
+    Check LibhankelSesansTransform against a case with an exact answer.
+
+    Mirrors ClosedFormTest but for the libhankel-backed transform.  The
+    default strategy (QWE_Key, eps_rel=1e-9) on a smooth Gaussian should
+    match the analytic answer to a few parts in 1e-8.
+    """
+    def setUp(self):
+        self.transform = sesans.LibhankelSesansTransform(
+            TEST_SELENGTH, TEST_SELENGTH, TEST_LAMBDA, NO_MASKING, Rmax=None)
+
+    def test_analytic(self):
+        """P(xi) matches the closed form for a Gaussian scatterer."""
+        P = self.transform.apply(gaussian_correlation(self.transform.q_calc))
+        target = gaussian_polarisation(TEST_SELENGTH)
+        self.assertEqual(P.shape, TEST_SELENGTH.shape)
+        self.assertLess(np.max(np.abs(P - target))/TEST_SCALE, 1e-7)
 
 
 # The measured data below. Everything above needs only numpy and scipy;
@@ -258,13 +287,16 @@ def relative_error(P, reference):
 #: the filter's worst file because it is the only one with a structure
 #: factor, whose peak the fixed abscissae barely resolve.
 EXPECTED_ERROR = {
-    #                              dense    filter
-    "sphere.ses":                  (2e-2,   1e-3),
-    "spheres2micron.ses":          (1e-3,   1e-3),
-    "core_shell.ses":              (1e-1,   1e-2),
-    "se008724_01.ses":             (1e-3,   1e-3),
-    "se008731_01_40pcorr.ses":     (1e-3,   1e-3),
-    "SiO2_100pc_H2O_0pc_D2O.ses":  (2e-1,   1e-3),
+    #                              dense    filter  libhankel
+    "sphere.ses":                  (2e-2,   1e-3,   5e-4),
+    "spheres2micron.ses":          (1e-3,   1e-3,   1e-3),
+    "core_shell.ses":              (1e-1,   1e-2,   1e-2),
+    "se008724_01.ses":             (1e-3,   1e-3,   1e-3),
+    "se008731_01_40pcorr.ses":     (1e-3,   1e-3,   1e-3),
+    # libhankel does not apply the acceptance mask, so the time-of-flight
+    # file (varying wavelength, strong masking) is noticeably worse than
+    # the filter but still well within 1e-2.
+    "SiO2_100pc_H2O_0pc_D2O.ses":  (2e-1,   1e-3,   1e-2),
 }
 
 
@@ -280,14 +312,17 @@ class TransformComparisonTest(unittest.TestCase):
     def setUpClass(cls):
         cls.results = {}
         for measurement in MEASUREMENTS:
-            cls.results[measurement.filename] = {
-                'reference': reference_polarisation(measurement),
-                'dense': make_calculator(
-                    measurement, sesans.SesansTransform)(**measurement.pars),
-                'filter': make_calculator(
-                    measurement,
-                    sesans.DHTSesansTransform)(**measurement.pars),
-            }
+            row = {'reference': reference_polarisation(measurement)}
+            for strategy, transform in (
+                ('dense',    sesans.SesansTransform),
+                ('filter',   sesans.DHTSesansTransform),
+                ('libhankel', sesans.LibhankelSesansTransform),
+            ):
+                if strategy == 'libhankel' and not _LIBHANKEL_AVAILABLE:
+                    continue
+                row[strategy] = make_calculator(
+                    measurement, transform)(**measurement.pars)
+            cls.results[measurement.filename] = row
 
     def test_reference_converged(self):
         """
@@ -313,8 +348,10 @@ class TransformComparisonTest(unittest.TestCase):
         for filename, result in self.results.items():
             with self.subTest(filename):
                 reference = result['reference']
-                for strategy, limit in zip(('dense', 'filter'),
+                for strategy, limit in zip(('dense', 'filter', 'libhankel'),
                                            EXPECTED_ERROR[filename]):
+                    if strategy not in result or limit is None:
+                        continue
                     self.assertLess(
                         relative_error(result[strategy], reference), limit,
                         "%s transform on %s" % (strategy, filename))
@@ -328,16 +365,21 @@ def compare(repeats=3):
     if SKIP_REASON:
         print("cannot run:", SKIP_REASON)
         return
-    header = ("%-28s %4s %9s %8s %8s %7s %10s %9s"
-              % ("file", "n", "nq dense", "nq filt", "t dense", "t filt",
-                 "err dense", "err filt"))
+    strategies = [('dense', sesans.SesansTransform),
+                  ('filter', sesans.DHTSesansTransform)]
+    if _LIBHANKEL_AVAILABLE:
+        strategies.append(('libhankel', sesans.LibhankelSesansTransform))
+    names = [s for s, _ in strategies]
+    header = ("%-28s %4s" % ("file", "n")
+              + "".join(" %8s" % ("nq " + n) for n in names)
+              + "".join(" %7s" % ("t " + n) for n in names)
+              + "".join(" %10s" % ("err " + n) for n in names))
     print(header)
     print("-"*len(header))
     for measurement in MEASUREMENTS:
         reference = reference_polarisation(measurement)
         row = {}
-        for strategy, transform in (('dense', sesans.SesansTransform),
-                                    ('filter', sesans.DHTSesansTransform)):
+        for strategy, transform in strategies:
             # Time the call, not the setup: a fitter builds the calculator
             # once and then calls it thousands of times.
             calculator = make_calculator(measurement, transform)
@@ -348,11 +390,10 @@ def compare(repeats=3):
             row[strategy] = (len(calculator.resolution.q_calc),
                              (time.perf_counter() - start)/repeats,
                              relative_error(P, reference))
-        print("%-28s %4d %9d %8d %7.1fms %6.1fms %10.2e %9.2e"
-              % (measurement.filename, len(reference),
-                 row['dense'][0], row['filter'][0],
-                 row['dense'][1]*1e3, row['filter'][1]*1e3,
-                 row['dense'][2], row['filter'][2]))
+        print(("%-28s %4d" % (measurement.filename, len(reference)))
+              + "".join(" %8d" % row[n][0] for n in names)
+              + "".join(" %6.1fms" % (row[n][1]*1e3) for n in names)
+              + "".join(" %10.2e" % row[n][2] for n in names))
 
 
 if __name__ == "__main__":

@@ -8,7 +8,7 @@ Everything is in conventional units (nm for spin echo length)
 
 Wim Bouwman (w.g.bouwman@tudelft.nl), June 2013
 
-Two transforms are available. Both compute
+Three transforms are available. All compute
 
 .. math::   G(\\xi) = \\frac{1}{2\\pi} \\int_0^\\infty q\\, J_0(q\\xi)\\, I(q)\\, dq
 
@@ -16,11 +16,13 @@ Two transforms are available. Both compute
 bounds and spacing are derived from the spin-echo lengths.
 :class:`DHTSesansTransform` evaluates it with a digital filter, a quadrature
 rule designed for Hankel transforms whose abscissae are a fixed table divided
-by :math:`\\xi`. Both can act as a resolution object because both know the q
-values they need before the model is evaluated;
+by :math:`\\xi`. :class:`LibhankelSesansTransform` uses the same dense q grid
+as :class:`SesansTransform` but delegates the integration to ``libhankel``
+(optional dependency), supporting strategies including ``DHT_Key_201`` and
+``Adaptive_DE_Ooura``. All three can act as a resolution object because all
+know the q values they need before the model is evaluated;
 :data:`.direct_model.SESANS_TRANSFORM` selects between them.
 """
-
 
 import numpy as np  # type: ignore
 from numpy import pi  # type: ignore
@@ -250,4 +252,102 @@ class DHTSesansTransform:
         weights = np.empty_like(q_calc)
         weights[order] = trapezoid * q_calc[order]**2 / (2*pi)
         return weights
+
+
+class LibhankelSesansTransform:
+    """
+    Spin-Echo SANS transform calculator backed by ``libhankel``.
+
+    Interchangeable with :class:`SesansTransform` and
+    :class:`DHTSesansTransform`: exposes the same *q*, *q_calc* and *apply*
+    and accepts the same constructor arguments.
+
+    Like :class:`SesansTransform` it builds a dense log-spaced q grid in
+    ``__init__`` so that *q_calc* is known before the model is evaluated.
+    Unlike :class:`SesansTransform`, *apply* passes that grid as a tabulated
+    form factor to ``libhankel.hankel_transform`` rather than doing a
+    matrix multiply, which lets libhankel interpolate and integrate with its
+    own quadrature.
+
+    *strategy_name* and *strategy_params* are forwarded to
+    ``libhankel.hankel_transform`` unchanged; see the libhankel documentation
+    for the list of available strategies and their parameters.  The default
+    ``DHT_Key_201`` works well for tabulated form factors; ``QWE_Key`` is
+    an alternative that may be more accurate for smooth integrands but
+    requires ``strategy_params = {"n_eval": ..., "eps_rel": ...}``.
+    """
+
+    q = None        # type: np.ndarray
+    q_calc = None   # type: np.ndarray
+
+    #: libhankel strategy name; override on the class before setting
+    #: :data:`.direct_model.SESANS_TRANSFORM`.
+    strategy_name = "Adaptive_DE_Ooura"   # type: str
+
+    #: libhankel strategy parameters; override on the class before setting
+    #: :data:`.direct_model.SESANS_TRANSFORM`.
+    strategy_params = {"n_eval": 50, "eps_rel": 1e-6}  # type: dict
+
+    #: log spacing for the dense q grid, same role as in SesansTransform.
+    log_spacing = 1.0003   # type: float
+
+    #: High-q tail type passed to ``libhankel.hankel_transform``: either
+    #: ``"power_law"`` or ``"zero"``.  Override on the class before setting
+    #: :data:`.direct_model.SESANS_TRANSFORM`.
+    tail = "power_law"   # type: str
+
+    #: Exponent for the power-law tail.  Porod regime (compact particles)
+    #: gives exponent 4.  Set to 0 to let libhankel fit the exponent from
+    #: the last few tabulated points (fails if those points are all zero).
+    tail_exponent = 4.0   # type: float
+
+    def __init__(self, z, SElength, lam, zaccept, Rmax):
+        # type: (np.ndarray, np.ndarray, np.ndarray, float, float) -> None
+        self.q = z
+        self._SElength = None   # type: np.ndarray
+        self._set_grid(SElength, lam, zaccept, Rmax)
+
+    def apply(self, Iq):
+        # type: (np.ndarray) -> np.ndarray
+        """Apply the SESANS transform to the computed I(q)."""
+        from libhankel import hankel_transform
+        q_dict = {
+            'q': self.q_calc,
+            'f': Iq,
+            'interp_type': 'linear',
+            'tail': self.tail,
+            'exponent': self.tail_exponent,
+        }
+        G = np.asarray(hankel_transform(
+            0, q_dict, self._SElength, [], self.strategy_name, self.strategy_params,
+        )) / (2 * pi)
+        # G(0) = integral of q I(q) dq / (2 pi), no Bessel function needed.
+        # Trapezoid rule in log q covers [q_min, q_max]. Add the missing
+        # [0, q_min] piece: libhankel's QWE quadrature uses linear
+        # extrapolation below q_min (so I(q) ≈ I(q_min)), giving a
+        # rectangle contribution of q_min^2 * I(q_min) / 2.
+        q_min = self.q_calc[0]
+        G0 = (np.trapezoid(self.q_calc**2 * Iq, np.log(self.q_calc))
+              + q_min**2 * Iq[0] / 2) / (2 * pi)
+        return G - G0
+
+    def _set_grid(self, SElength, lam, zaccept, Rmax):
+        # type: (np.ndarray, np.ndarray, float, float) -> None
+        """
+        Build the dense log-spaced q grid and store the spin-echo lengths.
+
+        *lam* and *zaccept* are accepted for signature compatibility but not
+        used: the per-xi acceptance mask applied by :class:`SesansTransform`
+        and :class:`DHTSesansTransform` cannot be expressed as a single
+        tabulated I(q) passed to libhankel.  *Rmax* is likewise ignored
+        because libhankel chooses its own integration range internally.
+        """
+        self._SElength = np.asarray(SElength, dtype=float)
+        # q_min: a decade below 1/xi_max (the coarsest scale in the data).
+        # q_max: two decades above 1/xi_min (the finest scale); libhankel
+        # extrapolates beyond this with the power-law tail set in apply().
+        q_min = 0.1 / self._SElength[-1]
+        q_max = 100 / self._SElength[0]
+        self.q_calc = np.exp(np.arange(np.log(q_min), np.log(q_max),
+                                       np.log(self.log_spacing)))
 

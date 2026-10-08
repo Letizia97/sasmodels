@@ -1,33 +1,40 @@
-# Two ways to do the SESANS transform
+# Three ways to do the SESANS transform
 
-This branch adds `sesans.DHTSesansTransform` alongside the existing
-`sesans.SesansTransform`. Both turn a computed scattering curve `I(q)` into the
-SESANS polarisation `P(xi)`; they differ only in how the integral is
-evaluated. This note explains that difference, what it buys, and what it
-costs.
+This branch adds two classes alongside the existing `sesans.SesansTransform`:
+
+- `sesans.DHTSesansTransform` — a digital Hankel filter; no new dependency.
+- `sesans.LibhankelSesansTransform` — delegates to `libhankel`; requires the
+  `libhankel` package, which is an optional dependency.
+
+All three turn a computed scattering curve `I(q)` into the SESANS polarisation
+`P(xi)`; they differ in how the integral is evaluated. This note explains those
+differences, what each one buys, and what it costs.
 
 Nothing changes by default. `direct_model.SESANS_TRANSFORM` selects the class
 and still points at `SesansTransform`.
 
-## What both of them compute
+## What all three compute
 
-Both evaluate the same J0 Hankel transform,
+All three evaluate the same J0 Hankel transform,
 
 ```
 G(xi) = 1/(2 pi) * integral_0^inf  q J0(q xi) I(q) dq
 P(xi) = G(xi) - G(0)
 ```
 
-and both do it under the same contract, the one sasmodels uses for resolution
+and all do it under the same contract, the one sasmodels uses for resolution
 objects:
 
 1. pick the q values you need, up front, before the model is evaluated, and
    expose them as `q_calc`;
 2. receive `I(q_calc)` and reduce it to one value per data point in `apply`.
 
-That contract is the reason the two are interchangeable. It is also the reason
-neither can be adaptive: you commit to the abscissae before you have seen a
-single value of the integrand.
+That contract is the reason the three are interchangeable. `SesansTransform`
+and `DHTSesansTransform` must commit to all their abscissae upfront so they
+cannot adapt after seeing the integrand. `LibhankelSesansTransform` works
+around this by building a dense q grid for `q_calc` (so the contract is met)
+and then letting libhankel choose its own internal quadrature nodes when
+`apply` is called.
 
 ## The existing strategy: a dense log-spaced grid
 
@@ -87,30 +94,27 @@ and the model evaluation count grows with the number of data points.
 
 ## Side by side
 
-|                          | `SesansTransform`                          | `DHTSesansTransform`                    |
-| ------------------------ | ------------------------------------------ | --------------------------------------- |
-| quadrature               | rectangle rule in log q, `J0` resolved      | digital filter, `J0` in the weights     |
-| abscissae                | one grid shared by all `xi`                 | fixed table / `xi`, one column per `xi` |
-| tuning parameters        | `q_min`, `q_max`, `log_spacing`             | none                                    |
-| where they come from     | undocumented heuristics on `SElength`       | published filter coefficients           |
-| model evaluations        | `log(q_max/q_min)/log(1.0003)`, independent of the number of `xi` | `201 * n_xi` |
-| transform matrix         | `(n_q, n_xi)` — grows as the product        | `(201, n_xi)`                           |
-| `apply`                  | two `np.dot` against that matrix            | elementwise multiply and sum            |
-| `G(0)`                   | free, from the same grid                    | needs its own rule (see below)          |
-| `Rmax`                   | accepted and ignored                        | accepted and ignored                    |
-| acceptance masking       | applied to `G(xi)` weights only             | same                                    |
+|                          | `SesansTransform`                          | `DHTSesansTransform`                    | `LibhankelSesansTransform`                        |
+| ------------------------ | ------------------------------------------ | --------------------------------------- | ------------------------------------------------- |
+| quadrature               | rectangle rule in log q, `J0` resolved      | digital filter, `J0` in the weights     | libhankel strategy (e.g. `Adaptive_DE_Ooura`)     |
+| abscissae for `q_calc`   | one grid shared by all `xi`                 | fixed table / `xi`, one column per `xi` | one dense grid shared by all `xi` (same as dense) |
+| internal quadrature      | same as `q_calc`                            | same as `q_calc`                        | chosen by libhankel at `apply` time               |
+| tuning parameters        | `q_min`, `q_max`, `log_spacing`             | none                                    | `strategy_name`, `strategy_params`                |
+| where they come from     | undocumented heuristics on `SElength`       | published filter coefficients           | libhankel library                                 |
+| model evaluations        | ~32k–44k, independent of number of `xi`    | `201 * n_xi`                            | ~32k–44k (same grid as dense)                     |
+| `apply`                  | two `np.dot` against `(n_q, n_xi)` matrix  | elementwise multiply and sum            | call to libhankel C library                       |
+| `G(0)`                   | free, from the same grid                    | trapezoid over union of abscissae       | trapezoid over dense grid                         |
+| acceptance masking       | applied per point                           | applied per point                       | not applied                                       |
+| external dependency      | none                                        | none                                    | `libhankel`                                       |
 
-The cost rows are the crossover. The dense grid comes out at 32000–44000 q
-values across the measured files in `example/`, almost independently of how
-many spin-echo lengths they have, against `201 * n_xi` for the filter. Add
-spin-echo lengths and the filter catches up; the two meet at around 200
-points, after which the dense grid is the cheaper one. The measured files run
-from 25 to 120 spin-echo lengths, all on the filter's side of that line.
-
-The matrix row matters for memory: the dense grid's `H` is `n_q * n_xi`, so
-3.3M entries on `sphere.ses` against 16080 for the filter, and `apply` does a
-`np.dot` over all of it. That, not the model evaluations, is why the wall-clock
-gap (6–29×) is wider than the evaluation-count gap (1.8–6.5×).
+The dense grid's `q_calc` size (32k–44k) and `LibhankelSesansTransform`'s
+are similar because both build the same kind of grid; only the integration step
+differs. `DHTSesansTransform` uses far fewer model evaluations (201 × n_xi)
+because the filter's abscissae are spread across ξ values rather than packed
+into one shared grid. The dense grid's `apply` is the expensive step: a
+`np.dot` over an `n_q × n_xi` matrix up to 3.3M entries on `sphere.ses`,
+which is why it is 6–29× slower per call despite similar evaluation counts to
+libhankel.
 
 ## G(0), which turned out to be the other way round
 
@@ -164,27 +168,33 @@ files exercise it.
 
 ## Accuracy on measured data
 
-`sasmodels/test_sesans.py` runs both transforms over every `.ses`
+`sasmodels/test_sesans.py` runs all three transforms over every `.ses`
 file in `example/`, through `DirectModel` with real models, exactly the way
-SasView runs them. Because measured data has no closed form, it compares both
-against a third evaluation of the same integral — `reference_polarisation`,
+SasView runs them. Because measured data has no closed form, it compares all
+three against a brute-force evaluation of the same integral — `reference_polarisation`,
 a trapezoid rule on a q grid fine enough to resolve `J0(q xi)` at the longest
-spin-echo length, sharing no code with either transform. Doubling its
+spin-echo length, sharing no code with any of the transforms. Doubling its
 resolution moves it by less than 1e-5, so it can referee.
 
 Errors as a fraction of `max|P|`; times are per call, the thing a fitter pays
-thousands of times.
+thousands of times. The libhankel column uses the default `DHT_Key_201` strategy;
+see the libhankel section below for results with `Adaptive_DE_Ooura`.
 
-| file | n | nq dense | nq filter | t dense | t filter | err dense | err filter |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `sphere.ses` | 80 | 41552 | 16080 | 10.7 ms | 1.0 ms | 9.8e-3 | **2.0e-4** |
-| `spheres2micron.ses` | 40 | 32216 | 8040 | 9.6 ms | 0.7 ms | 5.0e-4 | 3.5e-4 |
-| `core_shell.ses` | 80 | 41552 | 16080 | 17.4 ms | 2.7 ms | 5.3e-2 | **4.2e-3** |
-| `se008724_01.ses` | 120 | 44005 | 24120 | 11.2 ms | 1.3 ms | **1.7e-4** | 3.0e-4 |
-| `se008731_01_40pcorr.ses` | 40 | 32216 | 8040 | 11.0 ms | 0.6 ms | 5.0e-4 | 3.5e-4 |
-| `SiO2_100pc_H2O_0pc_D2O.ses` | 25 | 32691 | 5025 | 8.8 ms | 0.3 ms | 9.0e-2 | **5.3e-5** |
+| file | n | nq dense | nq filter | t dense | t filter | err dense | err filter | err libhankel |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `sphere.ses` | 80 | 41552 | 16080 | 10.7 ms | 1.0 ms | 9.8e-3 | **2.0e-4** | 1.9e-4 |
+| `spheres2micron.ses` | 40 | 32216 | 8040 | 9.6 ms | 0.7 ms | 5.0e-4 | 3.5e-4 | 3.5e-4 |
+| `core_shell.ses` | 80 | 41552 | 16080 | 17.4 ms | 2.7 ms | 5.3e-2 | **4.2e-3** | 4.2e-3 |
+| `se008724_01.ses` | 120 | 44005 | 24120 | 11.2 ms | 1.3 ms | **1.7e-4** | 3.0e-4 | 3.0e-4 |
+| `se008731_01_40pcorr.ses` | 40 | 32216 | 8040 | 11.0 ms | 0.6 ms | 5.0e-4 | 3.5e-4 | 3.5e-4 |
+| `SiO2_100pc_H2O_0pc_D2O.ses` | 25 | 32691 | 5025 | 8.8 ms | 0.3 ms | 9.0e-2 | **5.3e-5** | 2.4e-3 |
 
-Three things come out of this.
+`LibhankelSesansTransform` with `DHT_Key_201` matches `DHTSesansTransform` on
+every fixed-wavelength file (errors agree to better than 1%). The time-of-flight
+file (`SiO2`) is the exception: the filter applies a per-point acceptance mask;
+libhankel cannot, so it is 45× worse on that file regardless of strategy.
+
+Three things come out of the dense vs. filter comparison.
 
 **Where the two disagree, the filter is the one that is right.** On three of
 the six files they agree to better than 1e-3 of the signal and the argument is
@@ -292,32 +302,151 @@ replacing the transform is the right move; if it only ties, the smaller and
 better-targeted fix is to repair `G(0)` in the existing method, which would
 also keep the dense grid's advantage on sharp features. That has not been run.
 
-## Accuracy on a closed form
+## A libhankel backend: `LibhankelSesansTransform`
 
-As a sanity check rather than a verdict, on a Gaussian scatterer
-`I(q) = exp(-w^2 q^2 / 2)` with 40 log-spaced spin-echo lengths:
+`LibhankelSesansTransform` is a third class on this branch. It uses the same
+dense log-spaced q grid as `SesansTransform` but delegates the integration to
+`libhankel.hankel_transform` rather than doing the matrix multiply itself.
 
-| | `P(xi)` error | `G(0)` error | model evaluations |
-| --- | --- | --- | --- |
-| dense grid | 1.5e-4 | 1.6e-4 | 40515 |
-| filter     | 5e-11  | 3e-13  | 8040  |
+### What it adds
 
-Do not read too much into the size of that gap. A Gaussian is the smoothest
-integrand either rule will ever see, and log-spaced spin-echo lengths are not
-something an instrument produces — every real file above is linear or
-piecewise linear in ξ. Both of those flatter the filter. The measured-data
-table is the one to argue from.
+`LibhankelSesansTransform` extends the two fixed-rule classes with adaptive
+quadrature strategies. `libhankel` supports several strategies; `DHT_Key_201`
+(the default) uses the same Kerry Key filter table vendored in `sesans_filter.py`,
+while `Adaptive_DE_Ooura` is a double-exponential method that handles J₀
+oscillations analytically and achieves 10–74× better accuracy than `DHT_Key_201`
+at only 2–3× the cost.
+
+### What QWE_Key gives
+
+`QWE_Key` is an adaptive Gauss–Kronrod quadrature that sets its own abscissae
+and refines until a tolerance criterion (`eps_rel`) is met. Unlike `DHT_Key_201`
+it is not the same rule as anything already in sasmodels, so it gives a
+genuinely independent measurement.
+
+To run it, override the class attributes before constructing the transform:
+
+```python
+from sasmodels import direct_model, sesans
+sesans.LibhankelSesansTransform.strategy_name = "QWE_Key"
+sesans.LibhankelSesansTransform.strategy_params = {"n_eval": 5000, "eps_rel": 1e-6}
+direct_model.SESANS_TRANSFORM = sesans.LibhankelSesansTransform
+```
+
+Results on the measured files (`n_eval=5000, eps_rel=1e-6`):
+
+| file | err filter | err QWE_Key | factor | t filter | t QWE_Key |
+| --- | --- | --- | --- | --- | --- |
+| `sphere.ses` | 2.03e-4 | **1.21e-5** | 17× better | 0.5 ms | 391 ms |
+| `spheres2micron.ses` | 3.48e-4 | **4.09e-6** | 85× better | 1.7 ms | 37 ms |
+| `core_shell.ses` | 4.19e-3 | **4.66e-5** | 90× better | 2.1 ms | 171 ms |
+| `se008724_01.ses` | 3.02e-4 | **2.89e-5** | 10× better | 0.7 ms | 243 ms |
+| `se008731_01_40pcorr.ses` | 3.48e-4 | **4.09e-6** | 85× better | 0.5 ms | 34 ms |
+| `SiO2_100pc_H2O_0pc_D2O.ses` | **5.32e-5** | 2.44e-3 | 45× worse | 0.2 ms | 114 ms |
+
+QWE_Key is 10–90× more accurate than the filter on five of six files, including
+`core_shell.ses` — the filter's hardest case — where QWE's adaptive refinement
+resolves the hardsphere peak that the filter's fixed ~19 points/decade cannot.
+The time-of-flight file remains worse regardless of strategy: the 45× gap is
+the acceptance-mask issue, not the quadrature.
+
+The cost is 20–800× slower per call (34–391 ms against 0.2–2.1 ms), so
+QWE_Key is not viable for fitting but is well suited as a one-shot accuracy
+check or a reference computation.
+
+**False convergence warning.** At `eps_rel=1e-4` QWE_Key reports convergence
+on every file but gives an error of 1.79e-1 on `se008724_01.ses` — three orders
+of magnitude off. A loose tolerance lets QWE declare each sub-interval locally
+converged without resolving the full integrand. **Do not use QWE_Key with
+`eps_rel` looser than 1e-6 on tabulated data.**
+
+QWE_Key is slow because it is a general-purpose Gauss-Kronrod rule that must
+resolve every J₀ oscillation numerically, one sub-interval at a time; the
+number of sub-intervals grows with ξ. Coarsening the q_calc grid (which reduces
+the kinks in the piecewise-linear interpolant) saves at most 16% of the time —
+the oscillations, not the kinks, are the bottleneck. `Adaptive_DE_Ooura` below
+achieves the same accuracy without this cost.
+
+### Adaptive_DE_Ooura: the practical adaptive strategy
+
+`Adaptive_DE_Ooura` is a double-exponential method designed for oscillatory
+Bessel-function integrals. Unlike QWE_Key, which is a general-purpose
+Gauss-Kronrod rule that has to resolve J₀ oscillations one sub-interval at a
+time, the DE transformation in Ooura's method handles the oscillations
+analytically, so the method converges in far fewer evaluations.
+
+```python
+sesans.LibhankelSesansTransform.strategy_name = "Adaptive_DE_Ooura"
+sesans.LibhankelSesansTransform.strategy_params = {"n_eval": 50, "eps_rel": 1e-6}
+```
+
+Results on the measured files:
+
+| file | err DHT | err Ooura | factor | t DHT | t Ooura |
+| --- | --- | --- | --- | --- | --- |
+| `sphere.ses` | 1.94e-4 | **2.06e-5** | 9× better | 7 ms | 7 ms |
+| `spheres2micron.ses` | 3.49e-4 | **5.49e-6** | 64× better | 3 ms | 11 ms |
+| `core_shell.ses` | 4.22e-3 | **5.70e-5** | 74× better | 6 ms | 8 ms |
+| `se008724_01.ses` | 3.00e-4 | **2.20e-5** | 14× better | 5 ms | 19 ms |
+| `se008731_01_40pcorr.ses` | 3.49e-4 | **5.49e-6** | 64× better | 3 ms | 8 ms |
+| `SiO2_100pc_H2O_0pc_D2O.ses` | 2.44e-3 | 2.44e-3 | — (masking) | 3 ms | 3 ms |
+
+Ooura gives the same accuracy as QWE_Key at `n_eval=5000, eps_rel=1e-6` but at
+only 7–19 ms — 5–50× faster than QWE_Key and only 2–3× slower than
+`DHT_Key_201` itself. The `n_eval` parameter has no effect in this range:
+`n_eval=50` already converges fully, and increasing it changes nothing. The
+convergence criterion (`eps_rel`) does the right work.
+
+This makes Ooura a plausible accuracy-check tool and potentially a fitter
+strategy for applications where 10–74× better accuracy is worth a factor of 2–3
+in cost. The only caveat is the same one as all `LibhankelSesansTransform`
+strategies: the acceptance mask is not applied, so the time-of-flight file
+shows no improvement over `DHT_Key_201`.
+
+### Implementation notes
+
+A few issues arose integrating with libhankel that are worth recording:
+
+- **Import**: `from libhankel import hankel_transform` is deferred to inside
+  `apply`, so the rest of sasmodels loads cleanly without libhankel installed.
+  `LibhankelClosedFormTest` skips rather than errors if libhankel is absent.
+- **Tail parameter**: libhankel expects `tail` as a string (`"power_law"` or
+  `"zero"`); a tuple causes a segfault in the C layer. The explicit Porod
+  exponent goes in as a separate `"exponent"` key.
+- **G(0)**: calling `hankel_transform` at xi ≈ 0 overflows in QWE_Key.
+  `G(0)` is instead computed as a trapezoid rule in log q over the dense
+  q grid, with a rectangle correction for the missing [0, q_min] interval
+  (libhankel's linear extrapolation below q_min includes this piece; a
+  plain trapezoid starting at q_min does not).
+- **Strategy for tabulated data**: `DHT_Key_201` is the strategy used in
+  libhankel's own tabulated form factor tests; `QWE_Key` requires care (see
+  convergence note above).
 
 ## Switching between them
 
 ```python
 from sasmodels import direct_model, sesans
+
+# Digital filter (fast, no extra dependency):
 direct_model.SESANS_TRANSFORM = sesans.DHTSesansTransform
+
+# libhankel with the default DHT_Key_201 strategy (same accuracy, optional dep):
+direct_model.SESANS_TRANSFORM = sesans.LibhankelSesansTransform
+
+# libhankel with Adaptive_DE_Ooura (best accuracy, ~2-3× slower than DHT):
+sesans.LibhankelSesansTransform.strategy_name = "Adaptive_DE_Ooura"
+sesans.LibhankelSesansTransform.strategy_params = {"n_eval": 50, "eps_rel": 1e-6}
+direct_model.SESANS_TRANSFORM = sesans.LibhankelSesansTransform
 ```
 
 Anything with the same constructor signature and the same `q`, `q_calc` and
 `apply` will do. `_make_sesans_transform` reads the module-level name instead of
 referring to `SesansTransform` directly.
+
+`strategy_name` and `strategy_params` are class attributes, so set them before
+assigning `SESANS_TRANSFORM`: `direct_model` reads the class when the data is
+interpreted, and at that point the strategy is fixed for the lifetime of that
+`DirectModel`.
 
 ## Provenance of the coefficients
 
@@ -331,30 +460,21 @@ original to neither project.
 
 All in `sasmodels/test_sesans.py`, in two parts:
 
-- the filter against a closed form on a Gaussian scatterer. Fast, no
-  dependencies beyond numpy and scipy.
-- the measured-data comparison above: both transforms over every `.ses` file in
+- closed-form tests against a Gaussian scatterer: one for `DHTSesansTransform`,
+  one for `LibhankelSesansTransform` (skips if libhankel is not installed).
+  Fast, no dependencies beyond numpy and scipy (and optionally libhankel).
+- the measured-data comparison: all three transforms over every `.ses` file in
   `example/`, refereed by an independent brute-force evaluation. Needs *sasdata*
   to read the files and a compiler to build the models, and skips if either is
-  missing.
+  missing. The libhankel subtests are additionally skipped if libhankel is not
+  installed.
 
-Run `python -m sasmodels.test_sesans` to print the comparison table.
+Run `python -m sasmodels.test_sesans` to print the three-way comparison table.
 
 ## Status
 
-The filter is implemented, tested against a closed form and against measured
-data, and wired in behind a switch that is off.
-
-Two of the three concerns this branch was opened with have been answered, and
-in the filter's favour:
-
-- ~~`_g0_weights` is home-made and is the accuracy floor.~~ It is the most
-  accurate part of the filter on every measured file. `G(0)` is where the
-  *dense grid* loses.
-- ~~The disagreement with the dense grid is unexplained, and resolving it needs
-  a reference neither transform provides.~~ There is now such a reference. The
-  disagreement is the dense grid truncating at `q_max`, it does not go away
-  under refinement, and where the two disagree the filter is closer.
+The filter and the libhankel backend are implemented, tested against a closed
+form and against measured data, and wired in behind a switch that is off.
 
 What is still open:
 
@@ -375,3 +495,24 @@ What is still open:
 - **Whether any of this changes a fit.** Everything above is quadrature error
   against a reference. Whether a 1–9% error on `P(ξ)` moves fitted parameters,
   and by how much against their uncertainties, has not been tested.
+
+## Recommendation
+
+Two strategies cover the practical range:
+
+- **`DHTSesansTransform`** (fast, no extra dependency): 0.3–2.7 ms per call,
+  accuracy ~1e-3 to 1e-4. Use it for fitting, where the transform is called
+  thousands of times. `LibhankelSesansTransform` with the default `DHT_Key_201`
+  strategy matches it on fixed-wavelength data if libhankel is available.
+
+- **`LibhankelSesansTransform` with `Adaptive_DE_Ooura`**: 7–19 ms per call,
+  accuracy ~1e-5 (10–74× better than DHT). Use it to verify a fit result,
+  evaluate a specific model carefully, or anywhere a more accurate number is
+  needed and 2–3× the cost is acceptable.
+
+`QWE_Key` reaches similar accuracy to Ooura but is 5–50× slower for no
+benefit, so there is no practical reason to reach for it over Ooura.
+
+Neither libhankel strategy applies the per-point acceptance mask, so they
+give worse results on time-of-flight instruments (varying wavelength).
+`DHTSesansTransform` is the right choice for those files.
