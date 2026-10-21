@@ -260,44 +260,5 @@ class TransformComparisonTest(unittest.TestCase):
                         "%s transform on %s" % (strategy, filename))
 
 
-def compare(repeats=3):
-    # type: (int) -> None
-    """
-    Print the comparison table. Run with ``python -m sasmodels.test_sesans``.
-    """
-    if SKIP_REASON:
-        print("cannot run:", SKIP_REASON)
-        return
-    strategies = [('dense', sesans.SesansTransform),
-                  ('filter', sesans.DHTSesansTransform)]
-    if _LIBHANKEL_AVAILABLE:
-        strategies.append(('libhankel', sesans.LibhankelSesansTransform))
-    names = [s for s, _ in strategies]
-    header = ("%-28s %4s" % ("file", "n")
-              + "".join(" %8s" % ("nq " + n) for n in names)
-              + "".join(" %7s" % ("t " + n) for n in names)
-              + "".join(" %10s" % ("err " + n) for n in names))
-    print(header)
-    print("-"*len(header))
-    for measurement in MEASUREMENTS:
-        reference = reference_polarisation(measurement)
-        row = {}
-        for strategy, transform in strategies:
-            # Time the call, not the setup: a fitter builds the calculator
-            # once and then calls it thousands of times.
-            calculator = make_calculator(measurement, transform)
-            P = calculator(**measurement.pars)
-            start = time.perf_counter()
-            for _ in range(repeats):
-                calculator(**measurement.pars)
-            row[strategy] = (len(calculator.resolution.q_calc),
-                             (time.perf_counter() - start)/repeats,
-                             relative_error(P, reference))
-        print(("%-28s %4d" % (measurement.filename, len(reference)))
-              + "".join(" %8d" % row[n][0] for n in names)
-              + "".join(" %6.1fms" % (row[n][1]*1e3) for n in names)
-              + "".join(" %10.2e" % row[n][2] for n in names))
-
-
 if __name__ == "__main__":
     compare()
