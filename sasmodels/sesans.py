@@ -212,13 +212,26 @@ class LibhankelSesansTransform:
     q = None        # type: np.ndarray
     q_calc = None   # type: np.ndarray
 
-    #: Override on the class before setting :data:`.direct_model.SESANS_TRANSFORM`.
-    strategy_name = "Adaptive_DE_Ooura"              # type: str
-    strategy_params = {"n_eval": 50, "eps_rel": 1e-6}  # type: dict
-    log_spacing = 1.003                              # type: float
-    tail = "power_law"                               # type: str
-    #: Porod exponent; 0 lets libhankel fit it from the last few points.
-    tail_exponent = 4.0                              # type: float
+    #: libhankel strategy name; override on the class before setting
+    #: :data:`.direct_model.SESANS_TRANSFORM`.
+    strategy_name = "DHT_Key_201"   # type: str
+
+    #: libhankel strategy parameters; override on the class before setting
+    #: :data:`.direct_model.SESANS_TRANSFORM`.
+    strategy_params = {}  # type: dict
+
+    #: log spacing for the dense q grid, same role as in SesansTransform.
+    log_spacing = 1.003   # type: float
+
+    #: High-q tail type passed to ``libhankel.hankel_transform``: either
+    #: ``"power_law"`` or ``"zero"``.  Override on the class before setting
+    #: :data:`.direct_model.SESANS_TRANSFORM`.
+    tail = "power_law"   # type: str
+
+    #: Exponent for the power-law tail.  Porod regime (compact particles)
+    #: gives exponent 4.  Set to 0 to let libhankel fit the exponent from
+    #: the last few tabulated points (fails if those points are all zero).
+    tail_exponent = 4.0   # type: float
 
     def __init__(self, z, SElength, lam, zaccept, Rmax):
         # type: (np.ndarray, np.ndarray, np.ndarray, float, float) -> None
