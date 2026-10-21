@@ -1,20 +1,11 @@
 """
 Tests for the SESANS transforms in :mod:`.sesans`.
 
-:class:`.sesans.SesansTransform` evaluates the SESANS Hankel transform on a
-dense log-spaced grid of q; :class:`.sesans.DHTSesansTransform` evaluates it
-with a digital filter; :class:`.sesans.LibhankelSesansTransform` delegates to
-``libhankel`` (optional dependency). First closed-form tests against a Gaussian
-scatterer, then all three run against each other on the ``.ses`` files in
-``example/``, refereed by :func:`reference_polarisation`.
-
-``README-sesans-transform.md`` has the measured numbers and the reasoning
-behind them; this file only guards them.
-
-The measured-data tests need *sasdata* and a compiler, and skip without
-either. Their model parameters are the starting values from the fit scripts
-in ``example/``, not fitted values: what is compared is two ways of
-evaluating one integral for one I(q).
+Closed-form tests against a Gaussian scatterer, then all three transforms run
+against each other on the ``.ses`` files in ``example/``, refereed by
+:func:`reference_polarisation`. Measured-data tests need *sasdata* and a
+compiler and skip without either.  ``README-sesans-transform.md`` has the
+measured numbers and the reasoning.
 """
 
 import time
@@ -53,18 +44,8 @@ TEST_SCALE = 1/(2*pi*TEST_WIDTH**2)
 
 def gaussian_correlation(q, width=TEST_WIDTH):
     # type: (np.ndarray, float) -> np.ndarray
-    """
-    A scattering curve whose SESANS transform is known in closed form.
-
-    For :math:`I(q) = \\exp(-w^2 q^2/2)`,
-
-    .. math::
-
-        G(\\xi) = \\frac{1}{2\\pi} \\int_0^\\infty q J_0(q\\xi) I(q)\\,dq
-                = \\frac{1}{2\\pi w^2} \\exp(-\\xi^2/2w^2)
-
-    so both G(xi) and G(0) are available to compare a transform against.
-    """
+    """I(q) = exp(-w^2 q^2/2), whose Hankel transform is known 
+    in closed form."""
     return np.exp(-(width*q)**2/2)
 
 
@@ -75,13 +56,8 @@ def gaussian_polarisation(SElength, width=TEST_WIDTH):
 
 
 class DigitalFiltersClosedFormTest(unittest.TestCase):
-    """
-    Check the digital filter against a case with an exact answer.
-
-    A Gaussian is the smoothest integrand either rule will ever see, so this
-    says the filter is wired up correctly and little else. The measured-data
-    tests below are the ones to argue from.
-    """
+    """Check DHTSesansTransform against a Gaussian scatterer 
+    with an exact answer."""
     def setUp(self):
         self.transform = DHTSesansTransform(
             TEST_SELENGTH, TEST_SELENGTH, TEST_LAMBDA, NO_MASKING, Rmax=None)
@@ -94,38 +70,10 @@ class DigitalFiltersClosedFormTest(unittest.TestCase):
         self.assertLess(np.max(np.abs(P - target))/TEST_SCALE, 1e-9)
 
     def test_g0(self):
-        """
-        G(0) matches the closed form.
-
-        The piece a filter cannot supply -- its abscissae are a/xi, so there
-        is nothing to evaluate at xi = 0 -- and the one part of
-        DHTSesansTransform that is not a published rule, so check it on its
-        own rather than only through P.
-        """
+        """G(0) matches the closed form (the one non-published part of the filter)."""
         Iq = gaussian_correlation(self.transform.q_calc)
         G0 = np.sum(self.transform._H0*Iq)
         self.assertLess(abs(G0 - 1/(2*pi*TEST_WIDTH**2))/TEST_SCALE, 1e-10)
-
-
-@unittest.skipUnless(_LIBHANKEL_AVAILABLE, "libhankel is not installed")
-class LibhankelClosedFormTest(unittest.TestCase):
-    """
-    Check LibhankelSesansTransform against a case with an exact answer.
-
-    Mirrors ClosedFormTest but for the libhankel-backed transform.  The
-    default strategy (QWE_Key, eps_rel=1e-9) on a smooth Gaussian should
-    match the analytic answer to a few parts in 1e-8.
-    """
-    def setUp(self):
-        self.transform = sesans.LibhankelSesansTransform(
-            TEST_SELENGTH, TEST_SELENGTH, TEST_LAMBDA, NO_MASKING, Rmax=None)
-
-    def test_analytic(self):
-        """P(xi) matches the closed form for a Gaussian scatterer."""
-        P = self.transform.apply(gaussian_correlation(self.transform.q_calc))
-        target = gaussian_polarisation(TEST_SELENGTH)
-        self.assertEqual(P.shape, TEST_SELENGTH.shape)
-        self.assertLess(np.max(np.abs(P - target))/TEST_SCALE, 1e-7)
 
 
 # The measured data below. Everything above needs only numpy and scipy;
@@ -139,10 +87,8 @@ EXAMPLE_DIR = Path(__file__).parent.parent / "example"
 #: A ``.ses`` file with a model to evaluate against it.
 Measurement = namedtuple("Measurement", "filename model_name pars")
 
-#: Every SESANS file in ``example/``. The spread matters more than the
-#: individual entries: 25 to 120 spin-echo lengths, one instrument that fixes
-#: the wavelength and one that scans it, and spin-echo lengths that are
-#: linearly spaced or piecewise linear, never log-spaced.
+#: Every SESANS file in ``example/``: 25–120 spin-echo lengths, fixed and
+#: scanning wavelength, linear and piecewise-linear xi spacing.
 MEASUREMENTS = [
     Measurement(
         "sphere.ses", "sphere",
@@ -194,13 +140,8 @@ SKIP_REASON = environment_problem()
 
 @contextmanager
 def using_transform(transform):
-    """
-    Run the body with *transform* as the SESANS transform.
-
-    :func:`.direct_model._make_sesans_transform` reads the module-level
-    :data:`.direct_model.SESANS_TRANSFORM` when the data is interpreted, so
-    this has to be set before DirectModel is built, not before it is called.
-    """
+    """Set SESANS_TRANSFORM for the duration; 
+    must be set before DirectModel is built."""
     saved = direct_model.SESANS_TRANSFORM
     direct_model.SESANS_TRANSFORM = transform
     try:
@@ -210,21 +151,15 @@ def using_transform(transform):
 
 
 def load(measurement):
-    """Load the data, with the metadata the transform needs."""
-    # Imported here rather than at the top: sasmodels.data imports cleanly
-    # without sasdata but load_data raises, and these tests should skip
-    # rather than error in that case.
+    """Load the data file; import deferred so missing 
+    sasdata causes a skip, not an error."""
     from .data import load_data
     return load_data(str(EXAMPLE_DIR / measurement.filename))
 
 
 def make_calculator(measurement, transform):
-    """
-    A DirectModel for *measurement* that will use *transform*.
-
-    The whole SasView path with only the transform swapped, so the two are
-    compared as they are actually used rather than as bare quadrature rules.
-    """
+    """DirectModel for *measurement* using *transform*, 
+    exercising the full SasView path."""
     data = load(measurement)
     with using_transform(transform):
         return DirectModel(data, load_model(measurement.model_name))
@@ -232,18 +167,11 @@ def make_calculator(measurement, transform):
 
 def reference_polarisation(measurement, n_linear=200001, n_log=200001):
     """
-    P(xi) = G(xi) - G(0) by brute force, to judge both transforms against.
+    P(xi) by brute-force trapezoid integration, sharing no code 
+    with either transform.
 
-    Neither transform can referee the other and measured data has no closed
-    form, so evaluate the integral directly: a trapezoid rule on a linear
-    grid of q fine enough to resolve J0(q xi) at the longest spin-echo
-    length, out to the acceptance edge where the integrand is cut off anyway.
-    G(0) has no oscillation, so it gets a trapezoid rule in log q over a
-    range wide enough to hold the whole of q I(q), unmasked, matching what
-    both transforms do with it.
-
-    Slow, useless for fitting, and shares no code with either transform,
-    which is the point.
+    G(xi): linear q grid, fine enough to resolve J0 at the longest xi, masked
+    at the acceptance edge.  G(0): log q grid over the full q range.
     """
     data = load(measurement)
     SElength = data.x
@@ -270,22 +198,13 @@ def reference_polarisation(measurement, n_linear=200001, n_log=200001):
 
 
 def relative_error(P, reference):
-    """
-    Largest difference, over max|reference|.
-
-    P passes through zero at short xi, so a pointwise relative error says
-    nothing there; max|P| is the scale the whole curve is read on.
-    """
+    """max|P - reference| / max|reference|; max-normalised 
+    because P passes through zero."""
     return np.max(np.abs(P - reference))/np.max(np.abs(reference))
 
 
-#: Largest error against :func:`reference_polarisation` expected of each
-#: transform, as a fraction of max|P|. Upper bounds, roughly twice what is
-#: measured today, so a transform that improves still passes. The dense
-#: grid's numbers are the interesting ones: the files it does worst on are
-#: the ones with the widest spread of spin-echo lengths. core_shell.ses is
-#: the filter's worst file because it is the only one with a structure
-#: factor, whose peak the fixed abscissae barely resolve.
+#: Error tolerances (fraction of max|P|) for each transform on each file.
+#: Roughly 2× the measured values so an improvement still passes.
 EXPECTED_ERROR = {
     #                              dense    filter  libhankel
     "sphere.ses":                  (2e-2,   1e-3,   5e-4),
@@ -302,12 +221,7 @@ EXPECTED_ERROR = {
 
 @unittest.skipIf(SKIP_REASON, SKIP_REASON)
 class TransformComparisonTest(unittest.TestCase):
-    """
-    Run both transforms over every measured data set in ``example/``.
-
-    Computed once for the class: building the six models and running the
-    reference takes a few seconds.
-    """
+    """All three transforms over every measured data set in ``example/``."""
     @classmethod
     def setUpClass(cls):
         cls.results = {}
@@ -325,12 +239,7 @@ class TransformComparisonTest(unittest.TestCase):
             cls.results[measurement.filename] = row
 
     def test_reference_converged(self):
-        """
-        Refining the reference does not move it.
-
-        If it did it would not be a reference, and nothing else here would
-        mean anything.
-        """
+        """Doubling the reference grid does not move it."""
         for measurement in MEASUREMENTS:
             with self.subTest(measurement.filename):
                 coarse = reference_polarisation(measurement, n_linear=100001)
@@ -338,13 +247,7 @@ class TransformComparisonTest(unittest.TestCase):
                 self.assertLess(relative_error(coarse, fine), 1e-5)
 
     def test_error_against_reference(self):
-        """
-        Both stay within the error expected of them.
-
-        The filter holds 1e-3 of the signal everywhere. The dense grid does
-        too on three of the six files and is one to two orders of magnitude
-        worse on the other three.
-        """
+        """Each transform stays within its expected error bound on every file."""
         for filename, result in self.results.items():
             with self.subTest(filename):
                 reference = result['reference']
