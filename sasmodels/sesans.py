@@ -229,6 +229,8 @@ class LibhankelSesansTransform:
     def apply(self, Iq):
         # type: (np.ndarray) -> np.ndarray
         """Apply the SESANS transform to the computed I(q)."""
+        # Deferred import: libhankel is optional; a top-level import would
+        # prevent loading this module when libhankel is not installed.
         from libhankel import hankel_transform
         q_dict = {
             'q': self.q_calc,
