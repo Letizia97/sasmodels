@@ -215,7 +215,7 @@ class LibhankelSesansTransform:
     #: Override on the class before setting :data:`.direct_model.SESANS_TRANSFORM`.
     strategy_name = "Adaptive_DE_Ooura"              # type: str
     strategy_params = {"n_eval": 50, "eps_rel": 1e-6}  # type: dict
-    log_spacing = 1.0003                              # type: float
+    log_spacing = 1.003                              # type: float
     tail = "power_law"                               # type: str
     #: Porod exponent; 0 lets libhankel fit it from the last few points.
     tail_exponent = 4.0                              # type: float
