@@ -282,14 +282,14 @@ class LibhankelSesansTransform:
 
     #: libhankel strategy name; override on the class before setting
     #: :data:`.direct_model.SESANS_TRANSFORM`.
-    strategy_name = "Adaptive_DE_Ooura"   # type: str
+    strategy_name = "DHT_Key_201"   # type: str
 
     #: libhankel strategy parameters; override on the class before setting
     #: :data:`.direct_model.SESANS_TRANSFORM`.
-    strategy_params = {"n_eval": 50, "eps_rel": 1e-6}  # type: dict
+    strategy_params = {}  # type: dict
 
     #: log spacing for the dense q grid, same role as in SesansTransform.
-    log_spacing = 1.0003   # type: float
+    log_spacing = 1.003   # type: float
 
     #: High-q tail type passed to ``libhankel.hankel_transform``: either
     #: ``"power_law"`` or ``"zero"``.  Override on the class before setting
