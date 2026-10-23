@@ -53,11 +53,10 @@ STRATEGIES = [
 
 if _LIBHANKEL_AVAILABLE:
     STRATEGIES += [
-        ("libhankel dht",   make_libhankel_class("DHT_Key_201"),                          "#FF9800", "-",  1.5),
-        ("libhankel ooura", make_libhankel_class("Adaptive_DE_Ooura",
-                                                  {"n_eval": 50, "eps_rel": 1e-6}),       "#4CAF50", "-",  1.5),
-        ("libhankel qwe",   make_libhankel_class("QWE_Key",
-                                                  {"n_eval": 2000, "eps_rel": 1e-6}),     "#E91E63", "--", 1.5),
+        ("libhankel dht",    make_libhankel_class("DHT_Key_201"),                         "#FF9800", "-",  1.5),
+        ("libhankel ooura",  make_libhankel_class("Adaptive_DE_Ooura",
+                                                   {"n_eval": 50, "eps_rel": 1e-6}),      "#4CAF50", "-",  1.5),
+        ("libhankel fftlog", make_libhankel_class("FFTLog"),                               "#E91E63", "--", 1.5),
     ]
 
 
