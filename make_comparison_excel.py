@@ -81,12 +81,7 @@ def collect(repeats=3):
             ("libhankel_dht_anderson_801",    make_libhankel_class("DHT_Anderson_801")),
             ("libhankel_ooura",               make_libhankel_class(
                 "Adaptive_DE_Ooura", {"n_eval": 50, "eps_rel": 1e-6})),
-            ("libhankel_qwe",                 make_libhankel_class(
-                "QWE_Key", {"n_eval": 2000, "eps_rel": 1e-6})),
-            ("libhankel_dht_key_101",         make_libhankel_class("DHT_Key_101")),
-            ("libhankel_dht_key_51",          make_libhankel_class("DHT_Key_51")),
-            ("libhankel_dht_guptasarma",      make_libhankel_class("DHT_Guptasarma")),
-            ("libhankel_dht_guptasarma_fast", make_libhankel_class("DHT_Guptasarma_Fast")),
+            ("libhankel_fftlog",              make_libhankel_class("FFTLog")),
         ]
 
     rows = []
