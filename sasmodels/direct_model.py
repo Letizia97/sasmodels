@@ -154,17 +154,23 @@ def _pop_par_weights(parameter, values, active=True):
     return value, pd[0], pd[1]
 
 
-#: Transform used to turn I(q) into the SESANS polarisation P(xi).
-#:
-#: Set this to :class:`.sesans.DHTSesansTransform` to use a digital filter
-#: instead of the dense log-spaced grid of :class:`.sesans.SesansTransform`.
-#: Anything with the same constructor signature and the same *q*, *q_calc*
-#: and *apply* will do; see :mod:`.sesans` for what the two differ in.
-SESANS_TRANSFORM = sesans.SesansTransform
+#: Map of name → transform class for use via *data.sesans_transform*.
+#: Mirrors how *data.accuracy* selects the 2D resolution calculation.
+SESANS_TRANSFORMS = {
+    "dense":      sesans.SesansTransform,
+    "fixed_grid": sesans.DHTSesansTransform,
+    "libhankel_fftlog":  sesans.LibhankelSesansTransform,
+}
 
 
 def _make_sesans_transform(data):
-    # Pre-compute the Hankel matrix (H)
+    # Pre-compute the Hankel matrix (H).
+    # The transform class is read from data.sesans_transform (a string key into
+    # SESANS_TRANSFORMS), defaulting to "dense" — the same pattern as
+    # data.accuracy for the 2D resolution calculation.
+    transform_name = getattr(data, 'sesans_transform', 'dense')
+    transform_class = SESANS_TRANSFORMS[transform_name]
+
     SElength, SEunits = data.x, data._xunit
     wavelength, wunits = data.source.wavelength, data.source.wavelength_unit
     theta_max, theta_units = data.sample.zacceptance
@@ -180,7 +186,7 @@ def _make_sesans_transform(data):
 
     Rmax = 10000000
     zaccept = 2 * np.pi / np.max(wavelength) * np.sin(theta_max)
-    hankel = SESANS_TRANSFORM(data.x, SElength, wavelength, zaccept, Rmax)
+    hankel = transform_class(data.x, SElength, wavelength, zaccept, Rmax)
     return hankel
 
 

@@ -11,14 +11,12 @@ measured numbers and the reasoning.
 import time
 import unittest
 from collections import namedtuple
-from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np  # type: ignore
 from numpy import pi  # type: ignore
 from scipy.special import j0
 
-from . import direct_model, sesans
 from .core import load_model
 from .direct_model import DirectModel, call_kernel
 from .sesans import DHTSesansTransform
@@ -138,31 +136,19 @@ def environment_problem():
 SKIP_REASON = environment_problem()
 
 
-@contextmanager
-def using_transform(transform):
-    """Set SESANS_TRANSFORM for the duration; 
-    must be set before DirectModel is built."""
-    saved = direct_model.SESANS_TRANSFORM
-    direct_model.SESANS_TRANSFORM = transform
-    try:
-        yield
-    finally:
-        direct_model.SESANS_TRANSFORM = saved
-
-
 def load(measurement):
-    """Load the data file; import deferred so missing 
+    """Load the data file; import deferred so missing
     sasdata causes a skip, not an error."""
     from .data import load_data
     return load_data(str(EXAMPLE_DIR / measurement.filename))
 
 
 def make_calculator(measurement, transform):
-    """DirectModel for *measurement* using *transform*, 
+    """DirectModel for *measurement* using *transform* (a key in SESANS_TRANSFORMS),
     exercising the full SasView path."""
     data = load(measurement)
-    with using_transform(transform):
-        return DirectModel(data, load_model(measurement.model_name))
+    data.sesans_transform = transform
+    return DirectModel(data, load_model(measurement.model_name))
 
 
 def reference_polarisation(measurement, n_linear=200001, n_log=200001):
@@ -227,15 +213,11 @@ class TransformComparisonTest(unittest.TestCase):
         cls.results = {}
         for measurement in MEASUREMENTS:
             row = {'reference': reference_polarisation(measurement)}
-            for strategy, transform in (
-                ('dense',    sesans.SesansTransform),
-                ('filter',   sesans.DHTSesansTransform),
-                ('libhankel', sesans.LibhankelSesansTransform),
-            ):
-                if strategy == 'libhankel' and not _LIBHANKEL_AVAILABLE:
+            for strategy in ('dense', 'fixed_grid', 'libhankel_fftlog'):
+                if strategy == 'libhankel_fftlog' and not _LIBHANKEL_AVAILABLE:
                     continue
                 row[strategy] = make_calculator(
-                    measurement, transform)(**measurement.pars)
+                    measurement, strategy)(**measurement.pars)
             cls.results[measurement.filename] = row
 
     def test_reference_converged(self):
@@ -251,7 +233,7 @@ class TransformComparisonTest(unittest.TestCase):
         for filename, result in self.results.items():
             with self.subTest(filename):
                 reference = result['reference']
-                for strategy, limit in zip(('dense', 'filter', 'libhankel'),
+                for strategy, limit in zip(('dense', 'fixed_grid', 'libhankel_fftlog'),
                                            EXPECTED_ERROR[filename]):
                     if strategy not in result or limit is None:
                         continue
