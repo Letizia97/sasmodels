@@ -35,6 +35,8 @@ except ImportError:
 
 
 def make_libhankel_class(strategy_name, strategy_params=None):
+    # Dynamically subclass LibhankelSesansTransform so each strategy gets its
+    # own class with strategy_name/strategy_params baked in as class attributes.
     return types.new_class(
         "Lh_" + strategy_name,
         (sesans.LibhankelSesansTransform,),
@@ -90,6 +92,10 @@ def collect(repeats=3):
         row = {"file": measurement.filename, "n": len(reference)}
         for strategy, transform in strategies:
             try:
+                # make_calculator builds a DirectModel with *transform* swapped in
+                # via SESANS_TRANSFORM. Calling calc(**pars) uses:
+                #   - call_kernel: evaluates the scattering model to give I(q)
+                #   - transform.apply(Iq): converts I(q) to P(xi) via the Hankel integral
                 calc = make_calculator(measurement, transform)
                 P = calc(**measurement.pars)
                 start = time.perf_counter()
