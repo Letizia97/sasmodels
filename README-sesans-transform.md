@@ -23,7 +23,9 @@ P = calc(**pars)
 
 ## Which to choose
 
-**`"fixed_grid"`** — use this when you don't want the extra LibHankel dependency, runtime is more important than accuracy. Faster than `"dense"` and more accurate on most files. 
+**`"fixed_grid"`** — use this when you don't want the extra LibHankel dependency, and  
+runtime is more important than accuracy. Faster than `"dense"` and more accurate on most 
+files. 
 
 **`"libhankel_fftlog"`** — use this when accuracy matters: verifying a fit
 result, careful model evaluation, publication-quality numbers. More accurate

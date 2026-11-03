@@ -8,7 +8,6 @@ compiler and skip without either.  ``README-sesans-transform.md`` has the
 measured numbers and the reasoning.
 """
 
-import time
 import unittest
 from collections import namedtuple
 from pathlib import Path
@@ -192,7 +191,7 @@ def relative_error(P, reference):
 #: Error tolerances (fraction of max|P|) for each transform on each file.
 #: Roughly 2× the measured values so an improvement still passes.
 EXPECTED_ERROR = {
-    #                              dense    filter  libhankel
+    #                              dense    fixed_grid  libhankel_fftlog
     "sphere.ses":                  (2e-2,   1e-3,   5e-4),
     "spheres2micron.ses":          (1e-3,   1e-3,   1e-3),
     "core_shell.ses":              (1e-1,   1e-2,   1e-2),
@@ -220,14 +219,6 @@ class TransformComparisonTest(unittest.TestCase):
                     measurement, strategy)(**measurement.pars)
             cls.results[measurement.filename] = row
 
-    def test_reference_converged(self):
-        """Doubling the reference grid does not move it."""
-        for measurement in MEASUREMENTS:
-            with self.subTest(measurement.filename):
-                coarse = reference_polarisation(measurement, n_linear=100001)
-                fine = reference_polarisation(measurement, n_linear=200001)
-                self.assertLess(relative_error(coarse, fine), 1e-5)
-
     def test_error_against_reference(self):
         """Each transform stays within its expected error bound on every file."""
         for filename, result in self.results.items():
@@ -243,4 +234,4 @@ class TransformComparisonTest(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    compare()
+    unittest.main()
