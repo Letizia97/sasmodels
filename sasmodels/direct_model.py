@@ -154,8 +154,9 @@ def _pop_par_weights(parameter, values, active=True):
     return value, pd[0], pd[1]
 
 
-#: Map of name → transform class for use via *data.sesans_transform*.
-#: Mirrors how *data.accuracy* selects the 2D resolution calculation.
+#: Map of name → transform class, selected via *data.sesans_transform*.
+#: See :mod:`.sesans` for when to use each. Mirrors how *data.accuracy*
+#: selects the 2D resolution calculation.
 SESANS_TRANSFORMS = {
     "dense":      sesans.SesansTransform,
     "fixed_grid": sesans.DHTSesansTransform,

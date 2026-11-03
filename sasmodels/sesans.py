@@ -12,13 +12,27 @@ Three transforms are available. All compute
 
 .. math::   G(\\xi) = \\frac{1}{2\\pi} \\int_0^\\infty q\\, J_0(q\\xi)\\, I(q)\\, dq
 
-:class:`SesansTransform` uses a dense log-spaced q grid.
-:class:`DHTSesansTransform` uses a digital filter (abscissae = table / xi).
-:class:`LibhankelSesansTransform` uses the same dense grid but delegates
-integration to ``libhankel`` (optional dependency).
-All three expose *q*, *q_calc* and *apply*;
-set *data.sesans_transform* to ``"dense"``, ``"fixed_grid"``, or ``"libhankel_fftlog"``
-to select between them (see :data:`.direct_model.SESANS_TRANSFORMS`).
+Set *data.sesans_transform* to one of the keys below before building a
+:class:`.direct_model.DirectModel` to select the transform.
+
+``"dense"`` (:class:`SesansTransform`)
+    The original approach. Evaluates the integral on a dense log-spaced q grid
+    using a precomputed matrix of J0 weights. No extra dependencies. Use this
+    as the safe default.
+
+``"fixed_grid"`` (:class:`DHTSesansTransform`)
+    Uses a digital Hankel transform with fixed abscissae scaled by xi. Faster
+    than ``"dense"`` because the grid is small and precomputed, with no
+    dependency beyond numpy. Use this when speed matters and accuracy
+    requirements are modest.
+
+``"libhankel_fftlog"`` (:class:`LibhankelSesansTransform`)
+    Delegates to the ``libhankel`` library (optional dependency) using its
+    FFTLog strategy, which is both accurate and fast. Use this when accuracy
+    matters most and ``libhankel`` is available.
+
+All three classes expose the same interface (*q*, *q_calc*, *apply*); see
+:data:`.direct_model.SESANS_TRANSFORMS` for the name-to-class mapping.
 """
 
 import numpy as np  # type: ignore
